@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#212121"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:gravity="center_horizontal">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="TÜVTÜRK MUAYENE ASİSTANI"
+        android:textColor="#FFFFFF"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="24dp"/>
+
+    <com.google.android.material.card.MaterialCardView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="24dp"
+        app:cardBackgroundColor="#333333"
+        app:cardCornerRadius="12dp">
+
+        <TextView
+            android:id="@+id/tvInspectionResult"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="20dp"
+            android:text="Durum Bekleniyor...\nSorgulamak için aşağıdaki butona basın."
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
+            android:textAlignment="center"/>
+    </com.google.android.material.card.MaterialCardView>
+
+    <Button
+        android:id="@+id/btnCheckInspection"
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:text="MUAYENE DURUMUNU SORGULA"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:backgroundTint="#1976D2" />
+
+</LinearLayout>
