@@ -44,6 +44,10 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+        <activity
+            android:name=".ui.ecu.EcuLabActivity"
+            android:label="Beyin Lab"
+            android:exported="false" />
     </application>
 
 </manifest>

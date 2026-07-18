@@ -10,6 +10,7 @@ import com.example.nsobd2.data.DriveLogger
 import com.example.nsobd2.data.DriveSummary
 import com.example.nsobd2.data.DtcHistoryStore
 import com.example.nsobd2.data.GpsTracker
+import com.example.nsobd2.data.LiveSensorCheck
 import com.example.nsobd2.data.ObdCommand
 import com.example.nsobd2.data.ParseResult
 import com.example.nsobd2.network.Elm327Connection
@@ -58,6 +59,13 @@ class VehicleViewModel : ViewModel() {
 
     private val _vin = MutableStateFlow("Henüz okunmadı")
     val vin = _vin.asStateFlow()
+
+    // Anlık sensör arıza uyarıları
+    private val _sensorWarnings = MutableStateFlow<List<LiveSensorCheck.Warning>>(emptyList())
+    val sensorWarnings = _sensorWarnings.asStateFlow()
+
+    // O2 salınım takibi için son okumalar
+    private val o2Samples = ArrayDeque<Double>()
 
     private val _rpmHistory = MutableStateFlow<List<Float>>(emptyList())
     val rpmHistory = _rpmHistory.asStateFlow()
@@ -109,6 +117,12 @@ class VehicleViewModel : ViewModel() {
             driveLogger.liveData.collect { data ->
                 if (driveLogger.isLogging.value && data.isNotEmpty()) {
                     _uiState.value = data
+                    // Logger açıkken de anlık sensör kontrolü çalışsın
+                    (data["O2"] as? ParseResult.Success)?.numericValue?.let { o2v ->
+                        o2Samples.addLast(o2v)
+                        while (o2Samples.size > 20) o2Samples.removeFirst()
+                    }
+                    _sensorWarnings.value = LiveSensorCheck.check(data, o2Samples.toList())
                 }
             }
         }
@@ -137,6 +151,15 @@ class VehicleViewModel : ViewModel() {
                             }
                             calculateInstantFuel(dataCache)
                             _uiState.value = HashMap(dataCache)
+
+                            // O2 örneğini biriktir (salınım kontrolü için)
+                            (dataCache["O2"] as? ParseResult.Success)?.numericValue?.let { o2v ->
+                                o2Samples.addLast(o2v)
+                                while (o2Samples.size > 20) o2Samples.removeFirst()
+                            }
+                            // Anlık sensör sağlık kontrolü
+                            _sensorWarnings.value = LiveSensorCheck.check(dataCache, o2Samples.toList())
+
                             val rpmVal = (dataCache["RPM"] as? ParseResult.Success)?.numericValue?.toFloat() ?: 0f
                             val spdVal = (dataCache["SPEED"] as? ParseResult.Success)?.numericValue?.toFloat() ?: 0f
                             pushHistorySample(rpmVal, spdVal)

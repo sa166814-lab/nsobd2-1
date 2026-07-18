@@ -21,6 +21,7 @@ import com.example.nsobd2.data.BatteryHealthStore
 import com.example.nsobd2.data.DriveHistoryStore
 import com.example.nsobd2.data.DtcHistoryStore
 import com.example.nsobd2.data.FuelTankStore
+import com.example.nsobd2.data.LiveSensorCheck
 import com.example.nsobd2.data.ParseResult
 import com.example.nsobd2.ui.widgets.MiniLineChartView
 import com.example.nsobd2.viewmodel.AppScreen
@@ -38,6 +39,7 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
     private var wasLogging: Boolean = false
 
     private lateinit var tvShiftIndicator: TextView
+    private lateinit var tvSensorWarning: TextView
     private lateinit var tvLogStatus: TextView
     private lateinit var btnDriveLog: Button
     private lateinit var btnShareLog: Button
@@ -69,6 +71,7 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
         gaugeSpeed.textColor = android.graphics.Color.WHITE
 
         tvShiftIndicator = view.findViewById(R.id.tvShiftIndicator)
+        tvSensorWarning = view.findViewById(R.id.tvSensorWarning)
         tvLogStatus = view.findViewById(R.id.tvLogStatus)
         btnDriveLog = view.findViewById(R.id.btnDriveLog)
         btnShareLog = view.findViewById(R.id.btnShareLog)
@@ -100,6 +103,7 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
             Toast.makeText(requireContext(), "⛽ $mode moduna geçildi", Toast.LENGTH_SHORT).show()
             true
         }
+
         btnDriveLog.setOnClickListener {
             val started = viewModel.toggleDriveLog(requireContext())
             if (!started) {
@@ -110,10 +114,12 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
                 }
             }
         }
+
         btnShareLog.setOnClickListener {
             val ok = viewModel.shareDriveLog(requireContext())
             if (!ok) Toast.makeText(requireContext(), "Paylaşılacak kayıt yok.", Toast.LENGTH_SHORT).show()
         }
+
         btnDtcHistory.setOnClickListener { showMenuDialog() }
 
         view.findViewById<Button>(R.id.btnReadVin).setOnClickListener {
@@ -185,6 +191,7 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
                 }
             }
         }
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.speedHistory.collect { list ->
@@ -192,6 +199,7 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
                 }
             }
         }
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.batteryVoltage.collect { v ->
@@ -199,11 +207,33 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
                 }
             }
         }
+
+        // ANLIK SENSÖR SAĞLIK UYARISI
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.sensorWarnings.collect { warnings ->
+                    if (warnings.isEmpty()) {
+                        tvSensorWarning.visibility = View.GONE
+                    } else {
+                        tvSensorWarning.visibility = View.VISIBLE
+                        val critical = warnings.any { it.severity == LiveSensorCheck.Severity.CRITICAL }
+                        tvSensorWarning.setBackgroundColor(
+                            android.graphics.Color.parseColor(if (critical) "#B71C1C" else "#E65100")
+                        )
+                        tvSensorWarning.text = warnings.joinToString("\n") {
+                            "⚠️ ${it.sensor}: ${it.message}"
+                        }
+                    }
+                }
+            }
+        }
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.instantFuel.collect { tvInstantFuel.text = it }
             }
         }
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.instantFuelUnit.collect { tvInstantFuelUnit.text = it }
@@ -235,6 +265,7 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
                 }
             }
         }
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.driveLogger.logCount.collect { count ->
@@ -257,7 +288,6 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
         val pct = FuelTankStore.getFuelPercentage(requireContext())
         tvTankInfo.text = "${"%.1f".format(Locale.US, cur)} L / ${"%.0f".format(Locale.US, cap)} L (%$pct)"
         pbTank.progress = pct
-
         // Menzil tahmini — son 7 gün ortalama tüketim
         val recs = DriveHistoryStore.getLastDays(requireContext(), 14)
         if (recs.isNotEmpty() && cur > 0) {
@@ -303,18 +333,15 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
         val mesaj = """
             Süre: $dakika dk $saniye sn
             Toplam Kayıt: ${s.totalEntries}
-            
             📏 OBD Mesafe: ${"%.2f".format(Locale.US, s.totalKm)} km
             $gpsLine⛽ Toplam Yakıt: ${"%.2f".format(Locale.US, s.totalLiters)} L
             📊 Ort. Tüketim: ${"%.1f".format(Locale.US, s.avgLper100)} L/100km
             💸 Maliyet: ${"%.2f".format(Locale.US, s.cost)} ₺
-            
             🔥 Max RPM: ${s.maxRpm}
             🚗 Max Hız: ${s.maxSpeed} km/h
             🌡 Max Hararet: ${s.maxCoolant} °C
             📊 Ortalama Hız: ${"%.1f".format(Locale.US, s.avgSpeed)} km/h
             🐎 Tahmini Max BG: ${"%.1f".format(Locale.US, s.maxHorsepower)} HP
-            
             🌱 EKO SKOR: ${s.ecoScore} / 100
             ${s.ecoComment}
         """.trimIndent()
@@ -431,7 +458,7 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
                     1 -> showDriveHistoryDialog()
                     2 -> showWeeklyReportDialog()
                     3 -> showBatteryHealthDialog()
-                    4 -> showFuelPriceDialog() // Burası değişen fonksiyonu tetikliyor
+                    4 -> showFuelPriceDialog()
                     5 -> showTankCapacityDialog()
                 }
             }
@@ -483,7 +510,6 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
                 val saniye = r.durationSec % 60
                 val mesaj = """
                     📅 ${r.date}
-                    
                     Süre: $dakika dk $saniye sn
                     📏 Mesafe: ${"%.2f".format(Locale.US, r.totalKm)} km
                     ⛽ Yakıt: ${"%.2f".format(Locale.US, r.totalLiters)} L
@@ -524,10 +550,8 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
         val maxHiz = recs.maxOf { it.maxSpeed }
         val saat = toplamSn / 3600
         val dk = (toplamSn % 3600) / 60
-
         val mesaj = """
             Son 7 gün, ${recs.size} sürüş
-            
             📏 Toplam Mesafe: ${"%.1f".format(Locale.US, toplamKm)} km
             ⏱ Toplam Süre: $saat sa $dk dk
             ⛽ Toplam Yakıt: ${"%.2f".format(Locale.US, toplamLt)} L
@@ -546,7 +570,7 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
         val (score, comment) = BatteryHealthStore.calculateHealthScore(requireContext())
         val hist = BatteryHealthStore.getAll(requireContext()).take(5)
         val histText = if (hist.isEmpty()) "" else "\n\nSon 5 marş:\n" + hist.joinToString("\n") {
-            "  ${it.date} → min ${"%.2f".format(Locale.US, it.minVoltage)}V"
+            "   ${it.date} → min ${"%.2f".format(Locale.US, it.minVoltage)}V"
         }
         AlertDialog.Builder(requireContext())
             .setTitle("🔋 Akü Sağlığı: $score/100")
@@ -558,33 +582,24 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
             }.show()
     }
 
-    // İŞTE DEĞİŞTİRİLEN VE APPPREFS'E UYARLANAN KISIM BURASI
     private fun showFuelPriceDialog() {
-        // AppPrefs içindeki isLpgMode'u kullanarak hangi modda olduğumuzu anlıyoruz
         val isLpg = AppPrefs.isLpgMode(requireContext())
         val modeText = if (isLpg) "LPG" else "BENZİN"
-
-        // Aktif mod hangisiyse (LPG veya Benzin) o fiyatı getiriyoruz
         val current = AppPrefs.getActiveFuelPrice(requireContext())
-
         val edit = EditText(requireContext()).apply {
             inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
             setText(String.format(Locale.US, "%.2f", current))
         }
-
         AlertDialog.Builder(requireContext())
             .setTitle("💰 $modeText Fiyatı (₺/L)")
             .setView(edit)
             .setPositiveButton("Kaydet") { _, _ ->
                 val v = edit.text.toString().replace(",", ".").toDoubleOrNull() ?: current
-
-                // Seçili olan moda göre ilgili fiyat kaydetme fonksiyonunu çağırıyoruz
                 if (isLpg) {
                     AppPrefs.setLpgPrice(requireContext(), v)
                 } else {
                     AppPrefs.setBenzinPrice(requireContext(), v)
                 }
-
                 Toast.makeText(requireContext(), "$modeText Fiyatı: ${"%.2f".format(Locale.US, v)} ₺/L", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Vazgeç", null).show()
