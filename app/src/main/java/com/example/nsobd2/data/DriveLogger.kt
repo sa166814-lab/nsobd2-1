@@ -54,6 +54,11 @@ class DriveLogger(private val connection: Elm327Connection) {
     private val _maxHp = MutableStateFlow(0.0)
 
     var gpsTotalKm: Double = 0.0
+
+    // MOTOR HACMİ — ViewModel, kayıt başlarken AppPrefs'ten doldurur.
+    // Varsayılan 1.4 L. Eskiden formüle 1.1 L gömülüydü.
+    var engineM3: Double = 0.0014
+    var volEff: Double = 0.85
     private var logIsLpg: Boolean = false
 
     private val _liveData = MutableStateFlow<Map<String, ParseResult>>(emptyMap())
@@ -132,7 +137,7 @@ class DriveLogger(private val connection: Elm327Connection) {
                     val afr = if (logIsLpg) 15.5 else 14.7
                     val fuelDensity = if (logIsLpg) 0.55 else 0.74
                     val iatK = iatC + 273.15
-                    val mafKgS = (mapKpa * 1000.0 * 0.0011 * 0.85 * (rpmV / 120.0) * 0.02897) / (8.314 * iatK)
+                    val mafKgS = (mapKpa * 1000.0 * engineM3 * volEff * (rpmV / 120.0) * 0.02897) / (8.314 * iatK)
                     val fuelLh = (mafKgS / afr / fuelDensity) * 3600.0
                     val deltaLiters = fuelLh * (deltaSec / 3600.0)
                     _totalLiters.value = _totalLiters.value + deltaLiters

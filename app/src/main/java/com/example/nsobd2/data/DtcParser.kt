@@ -2,20 +2,23 @@ package com.example.nsobd2.data
 
 /**
  * Arıza kodu çözücü.
- * Eski çözücünün sorunları:
- *  - Çok çerçeveli (multi-frame) cevapları tek blok sanıyordu
- *  - Sayaç (count) byte'ı olan cevaplarda 1 byte kayıyordu -> yanlış kod
- *  - Ham cevabı hiç göstermiyordu, bu yüzden yanlış çözüm fark edilmiyordu
+ *
+ * Araçta doğrulanan davranışlar:
+ *  - ISO 14230 (KWP) protokolünde SAYAÇ BYTE'I YOKTUR. Kodlar 43'ten hemen
+ *    sonra 2'şer byte hâlinde gelir. (43 01 15 00 00 00 00 -> P0115)
+ *  - Beyin desteklemediği servise 7F ile cevap verir (7F 07 11 gibi).
+ *
+ * Kod anlamları artık DtcDatabase'den geliyor.
  */
 object DtcParser {
 
     data class Decoded(
-        val codes: List<String>,        // ["P0300", "P0171"]
-        val rawResponse: String,        // ELM327'den gelen ham metin
-        val cleanHex: String,           // sadece hex karakterler
-        val method: String,             // hangi yorumla çözüldü
-        val alternative: List<String>,  // diğer yorumun sonucu (doğrulama için)
-        val note: String                // kullanıcıya mesaj
+        val codes: List<String>,
+        val rawResponse: String,
+        val cleanHex: String,
+        val method: String,
+        val alternative: List<String>,
+        val note: String
     )
 
     private val BAD_TOKENS = listOf(
@@ -40,15 +43,12 @@ object DtcParser {
 
         for (t in BAD_TOKENS) {
             if (upper.replace(" ", "").contains(t.replace(" ", ""))) {
-                return Decoded(
-                    emptyList(), raw, "", "-", emptyList(),
-                    "Beyin bu isteğe cevap vermedi ($t). Kontak açık mı?"
-                )
+                return Decoded(emptyList(), raw, "", "-", emptyList(),
+                    "Beyin bu isteğe cevap vermedi ($t). Kontak açık mı?")
             }
         }
         if (upper.contains("?")) {
-            return Decoded(emptyList(), raw, "", "-", emptyList(),
-                "ELM327 komutu anlamadı.")
+            return Decoded(emptyList(), raw, "", "-", emptyList(), "ELM327 komutu anlamadı.")
         }
 
         val hex = upper.filter { it in "0123456789ABCDEF" }
@@ -59,30 +59,22 @@ object DtcParser {
         // 7F = olumsuz cevap ("bu servisi desteklemiyorum")
         if (hex.startsWith("7F")) {
             val nrc = if (hex.length >= 6) hex.substring(4, 6) else "??"
-            return Decoded(
-                emptyList(), raw, hex, "negatif cevap", emptyList(),
-                "Beyin bu servisi desteklemiyor (7F / ${nrcText(nrc)})."
-            )
+            return Decoded(emptyList(), raw, hex, "negatif cevap", emptyList(),
+                "Beyin bu servisi desteklemiyor (7F / ${nrcText(nrc)}).")
         }
 
-        // Komut yankısı varsa at (örn. "03" ile başlıyorsa)
         val start = hex.indexOf(modePrefix)
         if (start < 0) {
             return Decoded(emptyList(), raw, hex, "-", emptyList(),
                 "Cevapta $modePrefix başlığı yok — beyin farklı formatta konuşuyor.")
         }
 
-        // Çerçeveleri topla. ISO/KWP'de her çerçeve: [prefix][en fazla 6 byte veri]
         val payload = collectFrames(hex, start, modePrefix)
 
-        // İki olası yorum: sayaç byte'ı var / yok
         val withoutCount = pairsToCodes(payload)
         val withCount = if (payload.size >= 2) pairsToCodes(payload.drop(1)) else emptyList()
 
-        // ÖNEMLİ: ISO 14230 (KWP) ve ISO 9141 protokollerinde sayaç byte'ı YOKTUR.
-        // Kodlar 43'ten hemen sonra 2'şer byte hâlinde gelir.
-        // (Sayaç byte'ı sadece CAN protokolünde bulunur; bu araç CAN kullanmıyor.)
-        // Araçta doğrulandı: 43 01 15 00 00 00 00  ->  P0115  (doğrudan okuma)
+        // KWP'de sayaç byte'ı yok — doğrudan okuma sabit.
         val primary = withoutCount
         val secondary = withCount
         val method = "doğrudan okuma (KWP)"
@@ -105,18 +97,13 @@ object DtcParser {
             guard++
             if (hex.regionMatches(i, prefix, 0, prefix.length)) {
                 i += prefix.length
-                // Bir çerçevede en fazla 6 veri byte'ı (3 arıza kodu) taşınır
                 var taken = 0
                 while (taken < 6 && i + 2 <= hex.length) {
-                    // Sıradaki çift yeni bir çerçeve başlığıysa dur
-                    if (taken > 0 && taken % 6 == 0) break
                     out.add(hex.substring(i, i + 2))
                     i += 2
                     taken++
-                    if (taken == 6) break
                 }
             } else {
-                // Başlık yoksa kalan her şeyi veri say
                 while (i + 2 <= hex.length) {
                     out.add(hex.substring(i, i + 2))
                     i += 2
@@ -136,7 +123,7 @@ object DtcParser {
             val b2 = bytes[i + 1]
             i += 2
             if (b1 == null) continue
-            if (b1 == 0 && b2 == "00") continue          // boş slot
+            if (b1 == 0 && b2 == "00") continue
 
             val letter = when ((b1 shr 6) and 0x03) {
                 0 -> "P"; 1 -> "C"; 2 -> "B"; else -> "U"
@@ -149,93 +136,35 @@ object DtcParser {
         return codes
     }
 
-    // ------------------------------------------------------- ARIZA SÖZLÜĞÜ
+    // ------------------------------------------------------------ ANLAMLAR
+    // Artık DtcDatabase'den geliyor.
 
-    fun meaning(code: String): String = when (code) {
-        // --- Karışım ---
-        "P0170" -> "Yakıt karışımı sapması (Bank 1).\nLPG'de sık görülür — ayar bozulmuş olabilir."
-        "P0171" -> "FAKİR karışım.\n206'da 1 numaralı şüpheli: emme manifold contası ya da fren servosu hortumundan vakum kaçağı. Sonra kirli MAP sensörü."
-        "P0172" -> "ZENGİN karışım.\nLPG enjektörü kaçırıyor olabilir. Benzinde: kirli MAP, arızalı su müşürü, tıkalı hava filtresi."
-        // --- MAP / hava ---
-        "P0105", "P0106", "P0107", "P0108", "P0109" ->
-            "MAP (emme manifold basıncı) sensörü devresi.\nSensör kirlenmiş ya da vakum hortumu çatlamış olabilir. 206'da çok yaygın."
-        "P0110", "P0111", "P0112", "P0113" ->
-            "IAT (emilen hava sıcaklığı) sensörü.\nKelebek boğazındaki sensör yağlanmış olabilir; nazikçe temizle."
-        "P0115", "P0116", "P0117", "P0118", "P0119" ->
-            "Su sıcaklık sensörü (müşür).\nTermostat gövdesindeki yeşil soketli müşür. Fan çalışmaması ve rölanti dalgalanması yapar."
-        "P0120", "P0121", "P0122", "P0123", "P0124" ->
-            "TPS — gaz kelebeği pozisyon sensörü.\nAşınmışsa rölanti dalgalanır, gaz yemez."
-        // --- Lambda ---
-        "P0130", "P0131", "P0132", "P0133", "P0134" ->
-            "Ön (katalizör öncesi) lambda sensörü arızası.\n100.000 km üstü sensör yorulur. Soket oksitlenmesini de kontrol et."
-        "P0135" -> "Ön lambda sensörü ısıtıcı devresi.\nSensörün ısıtıcı direnci kopmuş — sensör değişimi gerekir."
-        "P0136", "P0137", "P0138", "P0139", "P0140" ->
-            "Arka (katalizör sonrası) lambda sensörü.\nKatalizör verim hesabını bozar, P0420 ile birlikte gelir."
-        "P0141" -> "Arka lambda ısıtıcı devresi."
-        // --- Enjektör / yakıt ---
-        "P0201" -> "1. silindir enjektör devresi."
-        "P0202" -> "2. silindir enjektör devresi."
-        "P0203" -> "3. silindir enjektör devresi."
-        "P0204" -> "4. silindir enjektör devresi."
-        "P0230", "P0231", "P0232" -> "Yakıt pompası rölesi / devresi."
-        "P0261", "P0262", "P0264", "P0265", "P0267", "P0268", "P0270", "P0271" ->
-            "Enjektör devresi kısa devre / açık devre."
-        // --- Ateşleme ---
-        "P0300" -> "ÇOKLU silindir teklemesi.\n206'da kronik: bobin kütüğü. Sonra bujiler (tırnak aralığı) ve buji kabloları."
-        "P0301" -> "1. silindir teklemesi (volan tarafı).\nBuji, bobin ya da enjektör."
-        "P0302" -> "2. silindir teklemesi."
-        "P0303" -> "3. silindir teklemesi."
-        "P0304" -> "4. silindir teklemesi (triger tarafı)."
-        "P0320", "P0321", "P0322" -> "Ateşleme/devir sensörü devresi."
-        "P0325", "P0326", "P0327", "P0328" ->
-            "Vuruntu (knock) sensörü.\nBeyin avansı kısar, araç ağırlaşır ve yakıt artar."
-        "P0335", "P0336" ->
-            "Krank mili pozisyon sensörü.\n206'da klasik: araç sıcakken stop eder, sonra çalışmaz. Kablo demeti sürtmesini de kontrol et."
-        "P0340", "P0341", "P0343" -> "Eksantrik (kam) mili sensörü.\nZor çalışma ve güç kaybı yapar."
-        // --- Emisyon ---
-        "P0400", "P0401", "P0402", "P0403", "P0404" ->
-            "EGR devresi.\nValf kurumdan tıkanmış olabilir."
-        "P0420" -> "Katalizör verimi düşük.\nLPG'li araçlarda çok sık. Önce arka lambda sensörünü ve egzoz kaçağını ele — katalizör en son."
-        "P0440", "P0441", "P0442", "P0443", "P0446", "P0455" ->
-            "Yakıt buharı (kanister) sistemi.\nDepo kapağı contası ya da kanister valfi."
-        // --- Rölanti / hız ---
-        "P0500", "P0501" ->
-            "VSS — araç hız sensörü.\nŞanzıman üstündeki müşür. Hız kadranı ara ara sıfırlanıyorsa bu."
-        "P0505", "P0506", "P0507" ->
-            "Rölanti kontrol motoru (stepper).\nKelebek boğazı kurumlanmış olabilir; sökülüp temizlenir."
-        "P0560", "P0562", "P0563" ->
-            "Besleme gerilimi sorunu.\nAkü, alternatör ya da şase kablosu."
-        // --- Beyin / iletişim ---
-        "P0600", "P0601", "P0602", "P0603", "P0604", "P0605" ->
-            "Beyin (ECU) iç hatası.\nÖnce akü kutup başlarını ve şase noktalarını temizle."
-        "P1351", "P1608", "P1610", "P1611", "P1612" ->
-            "PSA'ya özel beyin/immobilizer kodu.\nAnahtar tanıma veya kodlama sorunu olabilir."
-        else -> when {
-            code.startsWith("P00") -> "Yakıt ve hava ölçüm sistemi."
-            code.startsWith("P01") -> "Yakıt/hava karışımı ve sensörleri (lambda, MAP, IAT, hararet)."
-            code.startsWith("P02") -> "Yakıt sistemi (enjektör, pompa)."
-            code.startsWith("P03") -> "Ateşleme sistemi (bobin, buji, krank/kam sensörü)."
-            code.startsWith("P04") -> "Emisyon kontrol (katalizör, EGR, kanister)."
-            code.startsWith("P05") -> "Hız / rölanti kontrol sistemi."
-            code.startsWith("P06") -> "Beyin (ECU) ve çıkış devreleri."
-            code.startsWith("P07") -> "Şanzıman."
-            code.startsWith("P1")  -> "Üretici (PSA) özel kodu — Lexia/Diagbox gerekebilir."
-            code.startsWith("C")   -> "Şasi sistemi (ABS, fren, direksiyon)."
-            code.startsWith("B")   -> "Gövde sistemi (airbag, klima, kapı)."
-            code.startsWith("U")   -> "İletişim/CAN hattı sorunu."
-            else -> "Bilinmeyen kod."
-        }
+    /** Kısa açıklama (eski kodlarla uyumluluk için aynı isim). */
+    fun meaning(code: String): String {
+        val b = DtcDatabase.bilgi(code)
+        return "${b.baslik}\n${b.aciklama}\n\nKontrol sırası:\n${b.supheliler}"
     }
 
-    /** Ekranda gösterilecek güzel metin. */
+    /** Tek satırlık başlık. */
+    fun shortMeaning(code: String): String = DtcDatabase.kisa(code)
+
+    /** Önem derecesi ikonu. */
+    fun severityIcon(code: String): String = DtcDatabase.bilgi(code).onem.ikon
+
+    /** Ekranda gösterilecek güzel metin — önem sırasına göre dizilmiş. */
     fun format(d: Decoded, title: String): String {
         val sb = StringBuilder()
         if (d.codes.isEmpty()) {
             sb.append(if (d.note.isNotEmpty()) d.note else "Kod yok.")
         } else {
-            d.codes.forEachIndexed { idx, c ->
+            val sirali = DtcDatabase.onemeGoreSirala(d.codes)
+            if (sirali.size > 1) {
+                sb.append("${sirali.size} kod bulundu (en acil en üstte)\n")
+                sb.append("═══════════════\n\n")
+            }
+            sirali.forEachIndexed { idx, c ->
                 if (idx > 0) sb.append("\n\n─────────────\n\n")
-                sb.append("🚨 $c\n").append(meaning(c))
+                sb.append(DtcDatabase.tam(c))
             }
         }
         return sb.toString()

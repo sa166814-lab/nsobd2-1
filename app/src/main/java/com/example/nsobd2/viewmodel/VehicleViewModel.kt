@@ -83,6 +83,12 @@ class VehicleViewModel : ViewModel() {
     private val _accelTestBest = MutableStateFlow(0.0)
     val accelTestBest = _accelTestBest.asStateFlow()
 
+    // MOTOR HACMİ — yakıt hesabının en kritik girdisi.
+    // Eskiden formüle 0.0011 (1.1 L) gömülüydü; araç 1.4 çıkınca tüm
+    // tüketim ve maliyet hesapları ~%27 DÜŞÜK gösteriyordu.
+    private var engineM3: Double = 0.0014
+    private var volEff: Double = 0.85
+
     private var crankingMonitorActive = false
     private var lowestCrankingVoltage = 99.0
 
@@ -90,6 +96,14 @@ class VehicleViewModel : ViewModel() {
 
     fun initFromPrefs(ctx: Context) {
         _isLpg.value = AppPrefs.isLpgMode(ctx)
+        engineM3 = AppPrefs.getEngineM3(ctx)
+        volEff = AppPrefs.getVolumetricEfficiency(ctx)
+    }
+
+    /** Ayarlardan motor hacmi değiştirildiğinde çağrılır. */
+    fun refreshEngineParams(ctx: Context) {
+        engineM3 = AppPrefs.getEngineM3(ctx)
+        volEff = AppPrefs.getVolumetricEfficiency(ctx)
     }
 
     fun toggleLpg(ctx: Context) {
@@ -217,7 +231,7 @@ class VehicleViewModel : ViewModel() {
         val afr = if (_isLpg.value) 15.5 else 14.7
         val fuelDensity = if (_isLpg.value) 0.55 else 0.74
         val iatK = iat + 273.15
-        val mafKgS = (mapKpa * 1000.0 * 0.0011 * 0.85 * (rpm / 120.0) * 0.02897) / (8.314 * iatK)
+        val mafKgS = (mapKpa * 1000.0 * engineM3 * volEff * (rpm / 120.0) * 0.02897) / (8.314 * iatK)
         val fuelLh = (mafKgS / afr / fuelDensity) * 3600.0
 
         if (speed > 5) {
@@ -258,6 +272,9 @@ class VehicleViewModel : ViewModel() {
                 viewModelScope.launch { tr.totalKmGps.collect { driveLogger.gpsTotalKm = it } }
             }
         }
+        // Yakıt hesabı için motor parametrelerini loggera aktar
+        driveLogger.engineM3 = AppPrefs.getEngineM3(ctx)
+        driveLogger.volEff = AppPrefs.getVolumetricEfficiency(ctx)
         driveLogger.startLogging(viewModelScope, isLpg = _isLpg.value)
         return true
     }

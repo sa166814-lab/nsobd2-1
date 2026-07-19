@@ -15,6 +15,8 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.nsobd2.data.AppPrefs
+import com.example.nsobd2.data.DtcDatabase
+import com.example.nsobd2.data.EcuDiscovery
 import com.example.nsobd2.data.ReportStore
 import com.example.nsobd2.network.Elm327Connection
 import kotlinx.coroutines.Dispatchers
@@ -104,6 +106,8 @@ class EcuLabActivity : AppCompatActivity() {
             "💾 Raporu Paylaş", "#8957E5", { shareReport() },
             "🧹 Ekranı Temizle", "#6E7681", { logBuffer.setLength(0); tvLog.text = "" }
         ))
+        root.addView(bigButton("⚙️ ARAÇ AYARLARI (motor hacmi)", "#484F58") { aracAyarlari() })
+        root.addView(bigButton("🔐 SESSİZ KEŞİF — AŞAMA 5A", "#9E6A03") { sessizKesif() })
 
         val rowCmd = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -236,6 +240,32 @@ class EcuLabActivity : AppCompatActivity() {
         return h.substring(idx + header.length)
     }
 
+    /**
+     * Bağlantı canlı mı? Koptuysa otomatik yeniden bağlanır.
+     * (TAM TARAMA sırasında ELM sessizleşip tüm rapor boş çıkmıştı.)
+     */
+    private suspend fun ensureConnected(): Boolean {
+        val test = conn.sendCommand("ATRV")
+        if (test.isNotBlank() && test.uppercase().contains("V")) return true
+
+        log("")
+        log("⚠️ Bağlantı koptu — yeniden bağlanılıyor...")
+        status("🟡 Yeniden bağlanılıyor...")
+        try { conn.disconnect() } catch (_: Exception) {}
+        delay(700)
+        val ip = etIp.text.toString().trim().ifEmpty { "192.168.0.10" }
+        val port = etPort.text.toString().trim().toIntOrNull() ?: 35000
+        val res = withContext(Dispatchers.IO) { conn.connect(ip, port) { } }
+        log("   $res")
+        status(if (conn.isConnected) "🟢 Bağlı" else "🔴 Bağlantı yok")
+        if (!conn.isConnected) {
+            log("❌ Bağlanamadı. ELM327'nin Wi-Fi'ına bağlı mısın? Kontak açık mı?")
+            return false
+        }
+        log("✅ Bağlantı geri geldi, devam ediliyor.")
+        return true
+    }
+
     private suspend fun ask(cmd: String, label: String = ""): String {
         val r = conn.sendCommand(cmd)
         log("→ ${if (label.isEmpty()) cmd else "$cmd  ($label)"}")
@@ -299,10 +329,21 @@ class EcuLabActivity : AppCompatActivity() {
         val cmd = etCmd.text.toString().trim().uppercase()
         if (cmd.isEmpty()) return
         if (!guard()) return
+        // GÜVENLİK SÜZGECİ — riskli servisler elle de gönderilemez
+        val izin = EcuDiscovery.izinKontrol(cmd)
+        if (!izin.izinli) {
+            log("")
+            log("⛔ KOMUT ENGELLENDİ: $cmd")
+            log("   ${izin.sebep}")
+            toast("Bu komut güvenlik nedeniyle engelli")
+            return
+        }
+
         busy = true
         lifecycleScope.launch {
             log("──────────────────────────────")
             val r = ask(cmd)
+            etCmd.setText("")
             if (isNegative(r)) log("   ℹ️ Beyin reddetti: ${negativeReason(r)}")
             busy = false
         }
@@ -319,26 +360,31 @@ class EcuLabActivity : AppCompatActivity() {
     }
 
     private suspend fun diagnosisInternal() {
+        if (!ensureConnected()) return
+
         log("")
         log("══════ 🩺 CANLI TEŞHİS ══════")
-        log("Motor rölantide ve sıcak olmalı. 30 saniye sürecek, dokunma.")
+        log("Motor rölantide ve SICAK olmalı. 30 saniye sürecek, dokunma.")
         log("")
 
-        val rpm = mutableListOf<Double>()
-        val cool = mutableListOf<Double>()
-        val stft = mutableListOf<Double>()
-        val ltft = mutableListOf<Double>()
-        val map = mutableListOf<Double>()
-        val o2a = mutableListOf<Double>()
-        val o2b = mutableListOf<Double>()
-        val load = mutableListOf<Double>()
-        val adv = mutableListOf<Double>()
-        val iat = mutableListOf<Double>()
+        val rpm = mutableListOf<Double>(); val cool = mutableListOf<Double>()
+        val stft = mutableListOf<Double>(); val ltft = mutableListOf<Double>()
+        val map = mutableListOf<Double>(); val o2a = mutableListOf<Double>()
+        val o2b = mutableListOf<Double>(); val load = mutableListOf<Double>()
+        val adv = mutableListOf<Double>(); val iat = mutableListOf<Double>()
 
         val samples = 25
+        var basarisiz = 0
+        var gecersizSu: Double? = null
+
         for (i in 1..samples) {
-            pid2("0C")?.let { rpm.add(it / 4.0) }
-            pid1("05")?.let { cool.add((it - 40).toDouble()) }
+            val r = pid2("0C")
+            if (r == null) basarisiz++ else rpm.add(r / 4.0)
+
+            pid1("05")?.let {
+                val c = (it - 40).toDouble()
+                if (AppPrefs.isCoolantValid(c)) cool.add(c) else gecersizSu = c
+            }
             pid1("06")?.let { stft.add((it - 128) * 100.0 / 128.0) }
             pid1("07")?.let { ltft.add((it - 128) * 100.0 / 128.0) }
             pid1("0B")?.let { map.add(it.toDouble()) }
@@ -348,14 +394,24 @@ class EcuLabActivity : AppCompatActivity() {
             pid1("0E")?.let { adv.add(it / 2.0 - 64.0) }
             pid1("0F")?.let { iat.add((it - 40).toDouble()) }
 
+            if (basarisiz >= 4) {
+                log("⚠️ Veri gelmiyor, bağlantı kontrol ediliyor...")
+                if (!ensureConnected()) { log("❌ Teşhis iptal edildi."); return }
+                basarisiz = 0
+            }
             if (i % 5 == 0) log("   ölçüm $i/$samples...")
+        }
+
+        if (rpm.isEmpty()) {
+            log("❌ Hiç veri okunamadı. Motor çalışıyor mu? Kontak açık mı?")
+            return
         }
 
         log("")
         log("── ÖLÇÜM ÖZETİ ──")
         fun row(name: String, l: List<Double>, unit: String, d: Int = 1) {
             if (l.isEmpty()) { log("  $name: okunamadı"); return }
-            log("  $name: ort ${f(avg(l), d)} $unit  (en az ${f(l.min(), d)} / en çok ${f(l.max(), d)}, dalga ${f(sd(l), d)})")
+            log("  $name: ort ${f(avg(l), d)} $unit  (en az ${f(l.min(), d)} / en çok ${f(l.max(), d)}, dalga ${f(sd(l), d + 1)})")
         }
         row("Devir      ", rpm, "d/dk", 0)
         row("Su sıcaklığı", cool, "°C", 0)
@@ -368,118 +424,187 @@ class EcuLabActivity : AppCompatActivity() {
         row("Motor yükü ", load, "%")
         row("Avans      ", adv, "°")
 
-        // ------------------------------------------------ KURALLAR
+        // =============================== KURALLAR
         log("")
         log("── 🔎 TEŞHİS ──")
         val bulgular = mutableListOf<String>()
 
-        val toplamTrim = avg(stft) + avg(ltft)
         val suOrt = avg(cool)
-        val mapOrt = avg(map)
-        val devirOrt = avg(rpm)
-        val devirDalga = sd(rpm)
-        val o2aOrt = avg(o2a)
-        val o2aDalga = sd(o2a)
-        val o2bDalga = sd(o2b)
+        val motorSicak = cool.isNotEmpty() && suOrt >= 82
+        val acikCevrim = stft.size >= 10 && sd(stft) < 0.01
+        val stftTavan = stft.isNotEmpty() && stft.any { kotlin.math.abs(it) >= 24.0 }
 
-        // 1) Karışım
-        if (stft.isNotEmpty() && ltft.isNotEmpty()) {
+        // 0) SENSÖR SÖKÜK / KOPUK
+        val gs = gecersizSu
+        if (gs != null) {
+            bulgular.add(
+                "🔴 SU SICAKLIK SENSÖRÜ OKUNMUYOR (${f(gs, 0)} °C)\n" +
+                        "   ${AppPrefs.sensorFaultText(gs)}\n" +
+                        "   Beyin motorun sıcaklığını bilmiyor:\n" +
+                        "   • Fan devreye girmez → HARARET RİSKİ\n" +
+                        "   • Soğuk çalıştırma karışımı basar → zengin, tekleme, fazla yakıt\n" +
+                        "   Soketi tak ya da sensörü değiştir. Bu hâlde uzun sürme.")
+        }
+
+        // 0b) ISINMA KAPISI
+        if (cool.isNotEmpty() && !motorSicak) {
+            bulgular.add(
+                "⚠️ MOTOR YETERİNCE SICAK DEĞİL (${f(suOrt, 0)} °C)\n" +
+                        "   Güvenilir teşhis için 85-95 °C gerekir.\n" +
+                        "   Aşağıdaki karışım ve lambda sonuçlarını KESİN kabul etme.")
+        }
+
+        // 1) ÖN LAMBDA
+        var onLambdaSaglikli = false
+        if (o2a.size >= 5) {
+            val ort = avg(o2a); val dalga = sd(o2a)
             when {
-                toplamTrim > 15 -> bulgular.add(
-                    "🔴 ÇOK FAKİR KARIŞIM (toplam düzeltme +${f(toplamTrim)}%)\n" +
-                            "   Beyin sürekli yakıt ekliyor. Sıralı şüpheliler:\n" +
-                            "   1. Emme manifold contası / vakum hortumu kaçağı (206'da 1 numara)\n" +
-                            "   2. Fren servosu hortumu\n" +
-                            "   3. Kirli/arızalı MAP sensörü\n" +
-                            "   4. Yorulmuş ön lambda sensörü")
-                toplamTrim > 8 -> bulgular.add(
-                    "🟠 Hafif fakir karışım (+${f(toplamTrim)}%)\n" +
-                            "   Küçük bir vakum kaçağı başlangıcı olabilir. Takip et.")
-                toplamTrim < -15 -> bulgular.add(
-                    "🔴 ÇOK ZENGİN KARIŞIM (${f(toplamTrim)}%)\n" +
-                            "   1. LPG enjektörü kaçırıyor olabilir\n" +
-                            "   2. Tıkalı hava filtresi\n" +
-                            "   3. Arızalı su sıcaklık sensörü (beyin motoru soğuk sanıyor)")
-                toplamTrim < -8 -> bulgular.add(
-                    "🟠 Hafif zengin karışım (${f(toplamTrim)}%)")
-                else -> bulgular.add("🟢 Karışım normal (toplam düzeltme ${f(toplamTrim)}%)")
+                ort in 0.40..0.50 && dalga < 0.03 && acikCevrim ->
+                    bulgular.add(
+                        "🟠 ÖN LAMBDA DEĞERLENDİRİLEMİYOR\n" +
+                                "   Değer ${f(ort, 3)} V'ta çakılı ama beyin de açık çevrimde.\n" +
+                                "   Beyin sensörü kullanmadığı için kabloda sadece 0.45 V referans\n" +
+                                "   gerilimi görünüyor. Sensör ölü OLABİLİR ama kanıt değil.\n" +
+                                "   Önce açık çevrimin sebebini çöz, sonra tekrar ölç.")
+                ort in 0.40..0.50 && dalga < 0.03 ->
+                    bulgular.add(
+                        "🔴 ÖN LAMBDA SENSÖRÜ ÖLÜ / KOPUK\n" +
+                                "   Değer ${f(ort, 3)} V'ta çakılı, oynama ${f(dalga, 3)} V.\n" +
+                                "   Kontrol sırası:\n" +
+                                "   1. Soket (egzoz manifoldu üstü, 4 kablolu) — oksit/yanık\n" +
+                                "   2. Isıtıcı sigortası\n" +
+                                "   3. Egzoz kaçağı\n" +
+                                "   4. Sensör değişimi")
+                o2a.max() < 0.60 ->
+                    bulgular.add(
+                        "🔴 ÖN LAMBDA YORULMUŞ\n" +
+                                "   Hiç ${f(o2a.max(), 2)} V'un üstüne çıkmamış.\n" +
+                                "   Sağlıklı sensör 0.85 V'a kadar çıkar. Yakıt tüketimini artırır.")
+                dalga < 0.05 ->
+                    bulgular.add("🔴 ÖN LAMBDA TEMBEL (oynama ${f(dalga, 3)} V) — sensör yorulmuş.")
+                else -> {
+                    onLambdaSaglikli = true
+                    bulgular.add("🟢 Ön lambda sağlıklı salınıyor (ort ${f(ort, 3)} V, oynama ${f(dalga, 3)})")
+                }
             }
         }
 
-        // 2) Su sıcaklığı
+        // 2) AÇIK ÇEVRİM
+        if (stft.size >= 10) {
+            if (acikCevrim) {
+                bulgular.add(
+                    "🔴 BEYİN AÇIK ÇEVRİMDE (kapalı çevrime geçemiyor)\n" +
+                            "   STFT ${stft.size} ölçümün hepsinde ${f(avg(stft))}% — hiç oynamamış.\n" +
+                            "   Beyin lambda sensörünü kullanmıyor, haritadan sabit yakıt basıyor.\n" +
+                            "   Sonuç: fazla yakıt, katalizör ömrü kısalması.\n" +
+                            "   Sebep: su sıcaklık sensörü arızası ya da ölü ön lambda.")
+            } else if (stftTavan) {
+                val yon = if (avg(stft) > 0) "EKLİYOR" else "KISIYOR"
+                bulgular.add(
+                    "🔴 BEYİN DÜZELTMEYİ TAVANA DAYAMIŞ (${f(stft.maxOf { kotlin.math.abs(it) })}%)\n" +
+                            "   Beyin yapabileceği en fazla yakıtı $yon ama yetmiyor.\n" +
+                            (if (avg(stft) > 0)
+                                "   FAKİR tarafta: vakum kaçağı (emme contası, fren servosu hortumu),\n" +
+                                        "   tıkalı enjektör, düşük yakıt basıncı, yorulmuş lambda."
+                            else
+                                "   ZENGİN tarafta: kaçıran enjektör, tıkalı hava filtresi,\n" +
+                                        "   yüksek yakıt basıncı, arızalı su sıcaklık sensörü."))
+            } else {
+                bulgular.add("🟢 Kapalı çevrim çalışıyor (STFT oynaması ${f(sd(stft), 2)}%)")
+            }
+        }
+
+        // 3) KARIŞIM
+        if (stft.isNotEmpty() && ltft.isNotEmpty() && !acikCevrim) {
+            val toplam = avg(stft) + avg(ltft)
+            when {
+                toplam > 15 -> bulgular.add(
+                    "🔴 ÇOK FAKİR KARIŞIM (+${f(toplam)}%)\n" +
+                            "   1. Emme manifold contası kaçağı (206'da 1 numara)\n" +
+                            "   2. Fren servosu hortumu\n3. Kirli MAP\n4. Tıkalı enjektör")
+                toplam > 8 -> bulgular.add("🟠 Hafif fakir karışım (+${f(toplam)}%)")
+                toplam < -15 -> bulgular.add(
+                    "🔴 ÇOK ZENGİN KARIŞIM (${f(toplam)}%)\n" +
+                            "   1. LPG enjektörü kaçırıyor\n2. Tıkalı hava filtresi\n" +
+                            "   3. Arızalı su sıcaklık sensörü")
+                toplam < -8 -> bulgular.add("🟠 Hafif zengin karışım (${f(toplam)}%)")
+                else -> bulgular.add("🟢 Karışım normal (${f(toplam)}%)")
+            }
+        } else if (stft.isNotEmpty()) {
+            bulgular.add("⚪ Karışım değerlendirilemedi — beyin açık çevrimde.")
+        }
+
+        // 4) ARKA LAMBDA
+        if (o2b.size >= 5) {
+            val ortB = avg(o2b)
+            when {
+                ortB > 0.70 && sd(o2b) < 0.05 -> bulgular.add(
+                    "🔴 MOTOR ZENGİN ÇALIŞIYOR (arka lambda ${f(ortB, 3)} V'ta sabit)\n" +
+                            "   Egzozda oksijen kalmıyor — katalizöre sürekli fazla yakıt gidiyor.\n" +
+                            "   Bu aynı zamanda ARKA sensörün ve tesisatın SAĞLAM olduğunu gösterir;\n" +
+                            "   sorun ön sensörde. Uzun sürerse katalizör ölür (P0420).")
+                ortB < 0.15 && sd(o2b) < 0.05 -> bulgular.add(
+                    "🟠 Arka lambda çok düşükte sabit (${f(ortB, 3)} V) — fakir çalışma ya da egzoz kaçağı.")
+                else -> bulgular.add("🟢 Arka lambda normal (${f(ortB, 3)} V)")
+            }
+        }
+
+        // 5) KATALİZÖR
+        if (o2b.size >= 5 && o2a.size >= 5) {
+            if (!onLambdaSaglikli) {
+                bulgular.add("⚪ Katalizör değerlendirilemedi — önce ön lambdayı çöz.")
+            } else if (sd(o2b) > sd(o2a) * 0.7 && sd(o2a) > 0.05) {
+                bulgular.add(
+                    "🟠 KATALİZÖR ZAYIFLAMIŞ OLABİLİR\n" +
+                            "   Arka lambda neredeyse ön kadar oynuyor\n" +
+                            "   (ön ${f(sd(o2a), 3)} / arka ${f(sd(o2b), 3)}). P0420'nin habercisi.")
+            } else bulgular.add("🟢 Katalizör verimi normal görünüyor")
+        }
+
+        // 6) SU SICAKLIĞI
         if (cool.isNotEmpty()) {
             when {
                 suOrt < 70 -> bulgular.add(
-                    "🔴 SU SICAKLIĞI DÜŞÜK (${f(suOrt, 0)}°C)\n" +
-                            "   Motor sıcaksa bu değer 85-95°C olmalı.\n" +
-                            "   1. Termostat açık kalmış\n" +
-                            "   2. Su sıcaklık müşürü arızalı (senin P0115 koduyla birebir uyuşuyor)\n" +
-                            "   Sonuç: fazla yakıt ve kalorifer üflememe.")
+                    "🔴 SU SICAKLIĞI ÇOK DÜŞÜK (${f(suOrt, 0)} °C)\n" +
+                            "   1. Termostat açık kalmış  2. Su müşürü arızalı")
+                suOrt < 82 -> bulgular.add("🟠 Su sıcaklığı düşük (${f(suOrt, 0)} °C) — motor tam ısınmamış olabilir.")
                 suOrt > 100 -> bulgular.add(
-                    "🔴 MOTOR HARARET YAPIYOR (${f(suOrt, 0)}°C)\n" +
-                            "   Fan, termostat ve su seviyesini hemen kontrol et.")
-                else -> bulgular.add("🟢 Su sıcaklığı normal (${f(suOrt, 0)}°C)")
+                    "🔴 MOTOR HARARET YAPIYOR (${f(suOrt, 0)} °C)\n" +
+                            "   FANI, termostatı ve su seviyesini HEMEN kontrol et. Yola çıkma.")
+                else -> bulgular.add("🟢 Su sıcaklığı normal (${f(suOrt, 0)} °C)")
             }
         }
 
-        // 3) Rölanti kararlılığı
+        // 7) RÖLANTİ
         if (rpm.isNotEmpty()) {
+            val devirOrt = avg(rpm); val devirDalga = sd(rpm)
             if (devirDalga > 60) bulgular.add(
                 "🟠 RÖLANTİ DALGALI (±${f(devirDalga, 0)} d/dk)\n" +
-                        "   Kelebek boğazı kurumlanması, rölanti motoru veya vakum kaçağı.")
-            else bulgular.add("🟢 Rölanti kararlı (${f(devirOrt, 0)} d/dk, dalga ±${f(devirDalga, 0)})")
-
-            if (devirOrt > 1100) bulgular.add(
-                "🟠 Rölanti yüksek (${f(devirOrt, 0)} d/dk). Normal: 750-900.\n" +
-                        "   Kelebek ayarı ya da hava kaçağı.")
+                        "   Kelebek boğazı kurumu, rölanti motoru ya da vakum kaçağı.")
+            else bulgular.add("🟢 Rölanti kararlı (${f(devirOrt, 0)} d/dk, ±${f(devirDalga, 0)})")
+            if (devirOrt > 1100) bulgular.add("🟠 Rölanti yüksek (${f(devirOrt, 0)} d/dk). Normal: 750-900.")
         }
 
-        // 4) MAP
-        if (map.isNotEmpty() && devirOrt < 1200) {
+        // 8) MAP
+        if (map.isNotEmpty() && avg(rpm) < 1200) {
+            val m = avg(map)
             when {
-                mapOrt > 50 -> bulgular.add(
-                    "🟠 RÖLANTİDE MAP YÜKSEK (${f(mapOrt, 0)} kPa)\n" +
-                            "   Normal rölanti: 30-42 kPa. Yüksekse hava kaçağı ya da\n" +
-                            "   supap/egzoz tıkanıklığı olabilir.")
-                mapOrt < 20 -> bulgular.add(
-                    "🟠 MAP çok düşük (${f(mapOrt, 0)} kPa) — sensör veya hortum sorunu.")
-                else -> bulgular.add("🟢 MAP normal (${f(mapOrt, 0)} kPa)")
+                m > 50 -> bulgular.add("🟠 Rölantide MAP yüksek (${f(m, 0)} kPa). Normal 30-45. Hava kaçağı olabilir.")
+                m < 20 -> bulgular.add("🟠 MAP çok düşük (${f(m, 0)} kPa) — sensör veya hortum sorunu.")
+                else -> bulgular.add("🟢 MAP normal (${f(m, 0)} kPa)")
             }
         }
-
-        // 5) Ön lambda
-        if (o2a.size >= 5) {
-            when {
-                o2aDalga < 0.05 -> bulgular.add(
-                    "🔴 ÖN LAMBDA SENSÖRÜ TEMBEL (dalgalanma sadece ${f(o2aDalga, 3)} V)\n" +
-                            "   Sağlıklı sensör rölantide 0.1-0.9 V arasında sürekli salınır.\n" +
-                            "   Sensör yorulmuş — yakıt tüketimini artırır, katalizörü öldürür.")
-                o2aOrt > 0.75 -> bulgular.add(
-                    "🟠 Ön lambda sürekli zengin okuyor (ort ${f(o2aOrt, 3)} V)")
-                o2aOrt < 0.25 -> bulgular.add(
-                    "🟠 Ön lambda sürekli fakir okuyor (ort ${f(o2aOrt, 3)} V)")
-                else -> bulgular.add(
-                    "🟢 Ön lambda sağlıklı salınıyor (ort ${f(o2aOrt, 3)} V, dalga ${f(o2aDalga, 3)})")
-            }
-        }
-
-        // 6) Arka lambda / katalizör
-        if (o2b.size >= 5 && o2a.size >= 5) {
-            if (o2bDalga > o2aDalga * 0.7 && o2aDalga > 0.05) bulgular.add(
-                "🟠 KATALİZÖR ZAYIFLAMIŞ OLABİLİR\n" +
-                        "   Arka lambda neredeyse ön lambda kadar dalgalanıyor\n" +
-                        "   (ön ${f(o2aDalga, 3)} / arka ${f(o2bDalga, 3)}).\n" +
-                        "   Sağlıklı katalizörde arka sensör düz durur.\n" +
-                        "   LPG kullanımında sık görülür — P0420'nin habercisi.")
-            else bulgular.add("🟢 Katalizör verimi normal görünüyor")
-        }
-
-        // 7) Emilen hava sıcaklığı
-        if (iat.isNotEmpty() && avg(iat) > 60) bulgular.add(
-            "🟠 Emilen hava çok sıcak (${f(avg(iat), 0)}°C)\n" +
-                    "   Motor sıcak hava emiyor, güç düşer. Hava kanalını kontrol et.")
 
         bulgular.forEach { log("\n$it") }
+
+        val kirmizi = bulgular.filter { it.startsWith("🔴") }
+        if (kirmizi.isNotEmpty()) {
+            log("")
+            log("── ⚡ ÖNCELİK SIRASI ──")
+            kirmizi.forEachIndexed { i, b ->
+                log("  ${i + 1}. " + b.lines().first().removePrefix("🔴 "))
+            }
+        }
 
         log("")
         log("══════════════════════════════")
@@ -497,6 +622,7 @@ class EcuLabActivity : AppCompatActivity() {
     }
 
     private suspend fun scanInternal() {
+        if (!ensureConnected()) return
         log("")
         log("══════ BEYİN TARAYICI ══════")
 
@@ -547,7 +673,7 @@ class EcuLabActivity : AppCompatActivity() {
         val a = ask("03", "aktif arızalar")
         val dec = com.example.nsobd2.data.DtcParser.decode(a, "43")
         if (dec.codes.isEmpty()) log("   Kod yok 👍")
-        else dec.codes.forEach { log("   🚨 $it — ${com.example.nsobd2.data.DtcParser.meaning(it)}") }
+        else dec.codes.forEach { log("   🚨 $it — ${DtcDatabase.tam(it)}") }
         delay(80)
         ask("0101", "MIL durumu + arıza sayısı")
 
@@ -564,6 +690,7 @@ class EcuLabActivity : AppCompatActivity() {
     }
 
     private suspend fun mode02Internal() {
+        if (!ensureConnected()) return
         log("")
         log("══════ MOD 02 — ARIZA ANI (Freeze Frame) ══════")
 
@@ -577,7 +704,7 @@ class EcuLabActivity : AppCompatActivity() {
                 val letter = when ((b1 shr 6) and 0x03) { 0 -> "P"; 1 -> "C"; 2 -> "B"; else -> "U" }
                 val code = "$letter${(b1 shr 4) and 0x03}${String.format("%X", b1 and 0x0F)}${p.substring(2, 4)}"
                 log("   🚨 Tetikleyen kod: $code")
-                log("   ${com.example.nsobd2.data.DtcParser.meaning(code)}")
+                log("   ${DtcDatabase.tam(code)}")
             }
         }
 
@@ -650,6 +777,101 @@ class EcuLabActivity : AppCompatActivity() {
     }
 
     // ------------------------------------------------------------- PAYLAŞIM
+
+    /**
+     * Motor hacmi yakıt hesabının en kritik girdisi.
+     * Eskiden koda 1.1 L gömülüydü; araç 1.4 çıkınca tüm tüketim
+     * hesapları %27 düşük çıkıyordu.
+     */
+    private fun aracAyarlari() {
+        val kutu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        kutu.addView(TextView(this).apply {
+            text = "Motor hacmi (litre)"; setTypeface(null, Typeface.BOLD)
+        })
+        val etHacim = EditText(this).apply {
+            setText(f(AppPrefs.getEngineLiters(this@EcuLabActivity), 1))
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "örn: 1.4"
+        }
+        kutu.addView(etHacim)
+        kutu.addView(TextView(this).apply {
+            text = "\nVolumetrik verim (0.75 - 0.95)"; setTypeface(null, Typeface.BOLD)
+        })
+        val etVe = EditText(this).apply {
+            setText(f(AppPrefs.getVolumetricEfficiency(this@EcuLabActivity), 2))
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "örn: 0.85"
+        }
+        kutu.addView(etVe)
+        kutu.addView(TextView(this).apply {
+            text = "\nMotor hacmi yakıt hesabını doğrudan etkiler.\n" +
+                    "Ruhsatın P.1 satırında cm³ olarak yazar: 1400 cm³ = 1.4 L"
+            textSize = 12f
+        })
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("⚙️ Araç Ayarları")
+            .setView(kutu)
+            .setPositiveButton("Kaydet") { _, _ ->
+                val h = etHacim.text.toString().replace(',', '.').toDoubleOrNull()
+                val v = etVe.text.toString().replace(',', '.').toDoubleOrNull()
+                if (h != null && h in 0.5..8.0) {
+                    AppPrefs.setEngineLiters(this, h)
+                    if (v != null && v in 0.5..1.0) AppPrefs.setVolumetricEfficiency(this, v)
+                    log("")
+                    log("⚙️ Motor hacmi ${f(h, 1)} L kaydedildi. Yakıt hesabı buna göre çalışacak.")
+                    toast("Kaydedildi: ${f(h, 1)} L")
+                } else toast("Geçersiz hacim")
+            }
+            .setNegativeButton("Vazgeç", null)
+            .show()
+    }
+
+    // ==================================================== AŞAMA 5A — KEŞİF
+
+    /**
+     * Beyne PSA'ya özel KWP servisleriyle SORU sorar, hiçbir şey yazmaz.
+     * Yazma / aktüatör / flash servisleri EcuDiscovery içinde kod
+     * seviyesinde engellidir; kazara gönderilemez.
+     */
+    private fun sessizKesif() {
+        if (!guard()) return
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("🔐 Sessiz Keşif (Aşama 5A)")
+            .setMessage(
+                "Beyne sadece SORU sorulacak, hiçbir şey yazılmayacak.\n\n" +
+                        "Yazma, aktüatör ve flash servisleri kod seviyesinde engelli.\n\n" +
+                        "ŞARTLAR:\n" +
+                        "• Kontak AÇIK, motor KAPALI\n" +
+                        "• Araç park hâlinde\n" +
+                        "• Akü sağlam (12 V üstü)\n\n" +
+                        "Yaklaşık 3-4 dakika sürer. Başlansın mı?"
+            )
+            .setPositiveButton("Başlat") { _, _ ->
+                busy = true
+                lifecycleScope.launch {
+                    try {
+                        if (ensureConnected()) {
+                            EcuDiscovery.kesfet(
+                                gonder = { cmd -> conn.sendCommand(cmd) },
+                                yaz = { satir -> log(satir) }
+                            )
+                            val saved = ReportStore.save(this@EcuLabActivity, "kesif", logBuffer.toString())
+                            log("💾 Keşif raporu kaydedildi: ${saved.name}")
+                            toast("Keşif tamam")
+                        }
+                    } catch (e: Exception) {
+                        log("❌ Keşif hatası: ${e.message}")
+                    }
+                    busy = false
+                }
+            }
+            .setNegativeButton("Vazgeç", null)
+            .show()
+    }
 
     private fun shareReport() {
         try {
