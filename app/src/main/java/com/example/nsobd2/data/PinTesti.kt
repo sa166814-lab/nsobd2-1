@@ -8,7 +8,7 @@ import kotlinx.coroutines.delay
  * ELM327'nin 7. pini hangi arac pinine baglanmissa (dogrudan ya da kopruyle)
  * o hatta su testler sirayla yapilir:
  *
- *   1) HIZLI INIT taramasi   : 01..FF her adrese "3E" (canli mi?)
+ *   1) HIZLI INIT taramasi   : 01..FF her adrese "81" (iletisim baslat)
  *   2) YAVAS INIT taramasi   : 01..FF, 5 baud adres + baud hizi taramasi
  *                              (10400 / 9600 / 4800)
  *   3) ANAHTAR BYTE cozumu   : cevap veren beynin hangi protokolu ve
@@ -18,6 +18,9 @@ import kotlinx.coroutines.delay
  * GUVENLIK: hicbir yazma / silme / aktuator komutu gonderilmez.
  */
 object PinTesti {
+
+    /** UI'daki "Durdur" butonu bunu true yapar; donguler kontrol eder. */
+    @Volatile var iptal = false
 
     data class Bulunan(
         val adres: String,
@@ -90,9 +93,8 @@ object PinTesti {
     /** "ATKW" cevabindan anahtar byte'lari cikarir. Ornek: "1:8F 2:E9" */
     private fun anahtarOku(ham: String): Pair<String, String>? {
         val r = Regex("1:\\s*([0-9A-Fa-f]{2}).*?2:\\s*([0-9A-Fa-f]{2})")
-        r.find(ham)?.let { return it.groupValues[1].uppercase() to it.groupValues[2].uppercase() }
-        val h = hex(ham)
-        return if (h.length >= 4) h.substring(h.length - 4, h.length - 2) to h.substring(h.length - 2) else null
+        // Sadece net "1:xx 2:yy" formati kabul edilir; tahmin yok (sahte basari olmasin).
+        return r.find(ham)?.let { it.groupValues[1].uppercase() to it.groupValues[2].uppercase() }
     }
 
     // ===================================================== ANA AKIS
@@ -107,6 +109,7 @@ object PinTesti {
         gonder: suspend (String) -> String,
         yaz: (String) -> Unit
     ): List<Bulunan> {
+        iptal = false
         val bulunanlar = mutableListOf<Bulunan>()
         val baslangic = System.currentTimeMillis()
 
@@ -131,20 +134,20 @@ object PinTesti {
         gonder("ATSP5"); delay(150)
         gonder("ATST32")
         for (n in 0x01..0xFF) {
+            if (iptal) break
             val adres = "%02X".format(n)
             if (adres == "F1" || adres == "33") continue
             if (n % 32 == 0) yaz("   ... 0x$adres")
             gonder("ATSH81${adres}F1")
             gonder("ATPC")
-            val ham = gonder("3E")
+            // v2: Bu beyinler once StartCommunication (81) bekliyor; 3E'ye cevap vermiyor.
+            val ham = gonder("81")
             if (initHatasi(ham)) continue
-            val c = EcuDiscovery.coz(ham, "3E")
+            val c = EcuDiscovery.coz(ham, "81")
             if (!c.gecerli) continue
             if (c.kaynakAdres.isNotEmpty() && c.kaynakAdres != adres) continue
 
-            // Hizli init'te anahtar byte'lari 81 (StartCommunication) cevabinda gelir
-            val sc = gonder("81")
-            val schex = hex(sc)
+            val schex = hex(ham)
             val idx = schex.indexOf("C1")
             val (kb1, kb2) = if (idx >= 0 && schex.length >= idx + 6)
                 schex.substring(idx + 2, idx + 4) to schex.substring(idx + 4, idx + 6)
@@ -152,6 +155,9 @@ object PinTesti {
             val b = Bulunan(adres, "hizli", "10400", "$kb1 $kb2", anahtarCoz(kb1, kb2))
             yaz("   ✅ 0x$adres cevap verdi  [${ham.trim()}]")
             bulunanlar += b
+        }
+        if (pin == "7" && bulunanlar.none { it.adres == "10" } && !iptal) {
+            yaz("   ⚠️ Motor beyni (0x10) bulunamadi! Baglanti/ELM sorunu olabilir.")
         }
 
         // ==================== 2) YAVAS INIT
@@ -165,6 +171,7 @@ object PinTesti {
         gonder("ATST64")
 
         for ((ib, baudAd) in baudlar) {
+            if (iptal) break
             val ibCevap = gonder("ATIB$ib")
             if (ibCevap.contains("?")) {
                 yaz("   ⚠️ ELM $baudAd baud'u desteklemiyor, atlandi")
@@ -172,26 +179,41 @@ object PinTesti {
             }
             yaz("")
             yaz("   >> $baudAd baud")
+            var belirsiz = 0
             for (n in 0x01..0xFF) {
+                if (iptal) break
                 val adres = "%02X".format(n)
                 if (adres == "F1") continue
                 if (n % 32 == 0) yaz("   ... 0x$adres")
                 gonder("ATIIA$adres")
                 gonder("ATSH81${adres}F1")
                 gonder("ATPC")
-                val ham = gonder("3E")
+                val ham = gonder("81")
                 if (initHatasi(ham)) continue
 
-                // Init tuttu! (cevap olmasa bile "NO DATA" gelir, ERROR gelmez)
+                // v2: "Hata yazmiyor" YETMEZ (klon ELM sahte basari veriyor).
+                // Basari icin GERCEK kanit sart: gecerli bir cevap cercevesi
+                // ya da okunabilen anahtar byte'lari.
+                val c = EcuDiscovery.coz(ham, "81")
                 val kw = gonder("ATKW")
                 val anahtar = anahtarOku(kw)
+                val gercek = (c.gecerli && (c.kaynakAdres.isEmpty() || c.kaynakAdres == adres)) ||
+                        anahtar != null
+
+                if (!gercek) {
+                    belirsiz++
+                    if (belirsiz <= 3) yaz("   ·  0x$adres belirsiz cevap (sayilmadi): [${ham.trim()}] KW:[${kw.trim()}]")
+                    continue
+                }
+
                 val kb1 = anahtar?.first ?: "??"
                 val kb2 = anahtar?.second ?: "??"
                 val b = Bulunan(adres, "yavas", baudAd, "$kb1 $kb2", anahtarCoz(kb1, kb2))
-                if (!ham.uppercase().contains("NO DATA")) b.notlar += "3E -> ${ham.trim()}"
-                yaz("   ✅ 0x$adres INIT TUTTU ($baudAd baud)  anahtar: $kb1 $kb2")
+                b.notlar += "81 -> ${ham.trim()}"
+                yaz("   ✅ 0x$adres INIT TUTTU ($baudAd baud)  anahtar: $kb1 $kb2  [${ham.trim()}]")
                 bulunanlar += b
             }
+            if (belirsiz > 0) yaz("   ($belirsiz adres belirsiz cevap verdi, gercek sayilmadi)")
         }
 
         // ==================== 3) BULUNANLARA SORULAR
@@ -201,6 +223,7 @@ object PinTesti {
             yaz("   Bulunan beyin yok, atlandi.")
         }
         for (b in bulunanlar) {
+            if (iptal) break
             yaz("")
             yaz("   ▶ 0x${b.adres} (${b.init} init, ${b.baud})")
             if (b.init == "hizli") {
@@ -247,6 +270,7 @@ object PinTesti {
         val dk = (System.currentTimeMillis() - baslangic) / 60000
         yaz("")
         yaz("════════ PIN $pin OZETI ($dk dk) ════════")
+        if (iptal) yaz("⛔ Test yarida durduruldu - sonuclar eksik.")
         if (bulunanlar.isEmpty()) {
             yaz("Bu pinde hic beyin cevap vermedi.")
             yaz("Ya bu pinde beyin yok, ya da kopru/baglanti hatali.")

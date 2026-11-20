@@ -110,6 +110,10 @@ class EcuLabActivity : AppCompatActivity() {
         root.addView(bigButton("🔐 SESSİZ KEŞİF — AŞAMA 5A", "#9E6A03") { sessizKesif() })
         root.addView(bigButton("📡 ADRES TARAMASI (01-FF)", "#0E7490") { adresTaramasi() })
         root.addView(bigButton("🧪 PİN TESTİ (tam teşhis)", "#B91C1C") { pinTesti() })
+        root.addView(bigButton("⛔ TESTİ DURDUR", "#6E7681") {
+            com.example.nsobd2.data.PinTesti.iptal = true
+            toast("Durduruluyor... (birkaç saniye sürebilir)")
+        })
 
         val rowCmd = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
