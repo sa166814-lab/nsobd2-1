@@ -94,7 +94,11 @@ class Elm327Connection {
 
     suspend fun sendCommand(cmd: String): String = cmdMutex.withLock { sendCommandInternal(cmd) }
 
-    private suspend fun sendCommandInternal(cmd: String): String {
+    /** Yavas init gibi uzun suren komutlar icin: '>' gelene kadar daha uzun bekler. */
+    suspend fun sendCommandLong(cmd: String, timeoutMs: Long = 8000): String =
+        cmdMutex.withLock { sendCommandInternal(cmd, timeoutMs) }
+
+    private suspend fun sendCommandInternal(cmd: String, timeoutMs: Long = 3000): String {
         if (socket == null || socket?.isConnected != true || socket?.isClosed == true) return ""
         return withContext(Dispatchers.IO) {
             try {
@@ -104,7 +108,7 @@ class Elm327Connection {
                 val startTime = System.currentTimeMillis()
                 try {
                     while (true) {
-                        if (System.currentTimeMillis() - startTime > 3000) break
+                        if (System.currentTimeMillis() - startTime > timeoutMs) break
                         val bytesRead = inStream?.read(buffer) ?: break
                         if (bytesRead < 0) break
                         val chunk = String(buffer, 0, bytesRead)

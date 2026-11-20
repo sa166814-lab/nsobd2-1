@@ -109,6 +109,7 @@ class EcuLabActivity : AppCompatActivity() {
         root.addView(bigButton("⚙️ ARAÇ AYARLARI (motor hacmi)", "#484F58") { aracAyarlari() })
         root.addView(bigButton("🔐 SESSİZ KEŞİF — AŞAMA 5A", "#9E6A03") { sessizKesif() })
         root.addView(bigButton("📡 ADRES TARAMASI (01-FF)", "#0E7490") { adresTaramasi() })
+        root.addView(bigButton("🧪 PİN TESTİ (tam teşhis)", "#B91C1C") { pinTesti() })
 
         val rowCmd = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -909,6 +910,56 @@ class EcuLabActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 log("❌ Tarama hatası: ${e.message}")
             }
+            busy = false
+        }
+    }
+
+    /** Tum baglanti testleri tek butonda: hizli/yavas init, baud, anahtar byte. */
+    private fun pinTesti() {
+        if (!guard()) return
+        val etPin = EditText(this).apply {
+            hint = "Araç pini (köprü yoksa 7)"
+            setText("7")
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("🧪 Pin Testi")
+            .setMessage(
+                "ELM'nin 7. pini şu an aracın hangi pinine bağlı?\n" +
+                        "(Köprü yapmadıysan 7 kalsın.)\n\n" +
+                        "• Kontak AÇIK, motor KAPALI\n" +
+                        "• Akü sağlam, telefon şarjda olsun\n\n" +
+                        "Normal: ~15 dk\nDerin (3 baud hızı): ~40 dk"
+            )
+            .setView(etPin)
+            .setPositiveButton("Normal") { _, _ -> pinTestiBaslat(etPin.text.toString(), false) }
+            .setNeutralButton("Derin") { _, _ -> pinTestiBaslat(etPin.text.toString(), true) }
+            .setNegativeButton("Vazgeç", null)
+            .show()
+    }
+
+    private fun pinTestiBaslat(pinGirdi: String, derin: Boolean) {
+        val pin = pinGirdi.trim().ifEmpty { "7" }
+        busy = true
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        lifecycleScope.launch {
+            try {
+                if (ensureConnected()) {
+                    com.example.nsobd2.data.PinTesti.calistir(
+                        pin = pin,
+                        derin = derin,
+                        // Pin testinde init komutlari uzun surebilir: '>' gelene kadar bekle
+                        gonder = { cmd -> conn.sendCommandLong(cmd) },
+                        yaz = { satir -> log(satir) }
+                    )
+                    val saved = ReportStore.save(this@EcuLabActivity, "pin$pin", logBuffer.toString())
+                    log("💾 Pin testi raporu kaydedildi: ${saved.name}")
+                    toast("Pin $pin testi tamam")
+                }
+            } catch (e: Exception) {
+                log("❌ Pin testi hatası: ${e.message}")
+            }
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             busy = false
         }
     }
