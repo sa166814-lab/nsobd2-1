@@ -499,24 +499,29 @@ object EcuDiscovery {
                 gonder("ATSP$protokol"); delay(150)
                 gonder("ATIB10"); delay(100)      // 10.4 kbaud
                 gonder("ATIIA$adres"); delay(150)
+                gonder("ATSH81${adres}F1"); delay(120)
+                gonder("ATPC"); delay(150)
 
-                val initCevap = gonder("ATSI")
+                // v6 DUZELTME: Eskiden ATSI kullaniliyordu. Klon ELM327 ATSI'ye
+                // init yapmadan direkt "OK" diyor -> her adres "basarili"
+                // gorunuyordu (0x01 dahil). Artik GERCEK bir istek gonderip
+                // ELM'nin init sonucuna bakiyoruz. Init basarisizsa
+                // "BUS INIT: ERROR" gelir.
+                val initCevap = gonder("81")
                 delay(400)
-                val ok = !bosMu(initCevap) &&
-                        (initCevap.uppercase().contains("OK") || hex(initCevap).length >= 2)
+                val u = initCevap.uppercase()
+                val ok = !(u.contains("ERROR") || u.contains("UNABLE") ||
+                        u.contains("?") || u.isBlank())
 
                 if (!ok) {
-                    yaz("      X  baslatma basarisiz  [$initCevap]")
+                    yaz("      X  baslatma basarisiz  [${initCevap.trim()}]")
                     continue
                 }
 
                 basariliInit++
-                yaz("      OK BASLATMA BASARILI  [$initCevap]")
+                yaz("      OK BASLATMA BASARILI  [${initCevap.trim()}]")
                 bulgular += Bulgu("Yavas baslatma 0x$adres (protokol $protokol)",
                     "ATIIA$adres", initCevap, true)
-
-                // Bu adres icin baslik kur ve servisleri dene
-                gonder("ATSH81${adres}F1"); delay(120)
 
                 for ((komut, servis, etiket) in YAVAS_SERVISLER) {
                     val c = sor(komut, servis)
@@ -553,9 +558,13 @@ object EcuDiscovery {
         yaz("Basarili baslatma : $basariliInit")
         yaz("Servis cevabi     : ${servisBulgulari.size}")
         yaz("")
-        if (servisBulgulari.isEmpty()) {
-            yaz("HUKUM (KESIN): Bu beyne ELM327 ile uretici teshis")
-            yaz("katmanindan girilemiyor.")
+        if (basariliInit == 0) {
+            yaz("HUKUM: Hicbir adreste yavas baslatma tutmadi.")
+            yaz("Bu pinde (7) yavas init'e cevap veren beyin yok.")
+            yaz("Diger beyinler icin baska pinler denenmeli (adaptor).")
+        } else if (servisBulgulari.isEmpty()) {
+            yaz("HUKUM: Bu pinden ELM327 ile uretici teshis")
+            yaz("katmanina girilemedi (sadece 7. pin denendi).")
             yaz("")
             yaz("Denenen ve elenen her sey:")
             yaz(" - Hizli baslatma, 4 format bayti, 8 adres")
@@ -580,6 +589,87 @@ object EcuDiscovery {
         yaz("==================================")
 
         return bulgular
+    }
+
+    // ==================================================================
+    //  ADRES TARAMASI — bu pinde hangi beyinler var?
+    // ==================================================================
+    //
+    // 01..FF arasi her adrese "3E" (canli mi?) sorulur. Sadece salt okunur.
+    // Cevap veren (olumlu 7E ya da olumsuz 7F, fark etmez) adreste bir beyin
+    // vardir. Cevabin kaynak adresi istenen adresle eslesmeli; yoksa sayilmaz.
+    //
+    // hizli = ATSP5 (fast init)   ~4-5 dk
+    // yavas = ATSP4 (5 baud init) ~12-15 dk, istege bagli
+
+    data class BulunanBeyin(val adres: String, val protokol: String, val ham: String)
+
+    suspend fun adresTaramasi(
+        gonder: suspend (String) -> String,
+        yaz: (String) -> Unit,
+        yavasDaTara: Boolean
+    ): List<BulunanBeyin> {
+        val bulunanlar = mutableListOf<BulunanBeyin>()
+
+        yaz("")
+        yaz("========================================")
+        yaz("  ADRES TARAMASI (01-FF)")
+        yaz("  Sadece '3E' (canli mi?) sorulur. OKUMA.")
+        yaz("========================================")
+
+        gonder("ATZ"); delay(1200)
+        gonder("ATE0"); gonder("ATL0"); gonder("ATS0")
+        gonder("ATH1"); gonder("ATAL")
+        gonder("ATST32")   // cevap bekleme ~200 ms, tarama hizlansin
+
+        val protokoller = if (yavasDaTara)
+            listOf("5" to "hizli init", "4" to "yavas init")
+        else listOf("5" to "hizli init")
+
+        for ((protokol, pAd) in protokoller) {
+            yaz("")
+            yaz("== PROTOKOL $protokol ($pAd) ==")
+            gonder("ATSP$protokol"); delay(150)
+            if (protokol == "4") { gonder("ATKW0"); gonder("ATIB10") }
+
+            for (n in 0x01..0xFF) {
+                val adres = String.format("%02X", n)
+                if (adres == "F1" || adres == "33") continue   // test cihazi / fonksiyonel
+
+                if (n % 16 == 0) yaz("   ... 0x$adres")
+
+                if (protokol == "4") gonder("ATIIA$adres")
+                gonder("ATSH81${adres}F1")
+                gonder("ATPC")
+                val ham = gonder("3E")
+                val c = coz(ham, "3E")
+
+                if (c.gecerli && (c.kaynakAdres.isEmpty() || c.kaynakAdres == adres)) {
+                    val durum = if (c.nrc.isNotEmpty()) "red: ${nrcAciklama(c.nrc)}" else "OLUMLU"
+                    yaz("   ✅ 0x$adres CEVAP VERDI ($durum)  [${ham.trim()}]")
+                    bulunanlar += BulunanBeyin(adres, protokol, ham.trim())
+                }
+            }
+        }
+
+        // Temizlik
+        gonder("ATPC")
+        gonder("ATZ"); delay(1200)
+        gonder("ATE0"); gonder("ATL0"); gonder("ATS0"); gonder("ATH0")
+        gonder("ATSP5"); delay(200)
+
+        yaz("")
+        yaz("====== ADRES TARAMASI OZETI ======")
+        if (bulunanlar.isEmpty()) {
+            yaz("Hic beyin cevap vermedi.")
+        } else {
+            yaz("Cevap veren beyinler:")
+            bulunanlar.forEach { yaz("  • 0x${it.adres}  (protokol ${it.protokol})") }
+        }
+        yaz("Not: Sadece ELM'nin bagli oldugu pin (7) taranir.")
+        yaz("Diger pinlerdeki beyinler icin adaptor/kopru gerekir.")
+        yaz("==================================")
+        return bulunanlar
     }
 
     fun hexToAscii(raw: String): String {

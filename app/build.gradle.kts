@@ -11,10 +11,23 @@ android {
         applicationId = "com.example.nsobd2.pro"
         minSdk = 24
         targetSdk = 34 // Uyum sorunu olmaması için 34'e sabitledik
-        versionCode = 1
-        versionName = "1.0"
+        // GitHub Actions her derlemede numarayi otomatik arttirir
+        val runNo = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = runNo
+        versionName = "1.0.$runNo"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // Sabit imza: her derleme ayni anahtarla imzalanir, boylece
+    // yeni APK eskisinin ustune (verileri silmeden) kurulur.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("nsobd2-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {

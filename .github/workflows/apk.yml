@@ -1,0 +1,43 @@
+name: APK Derle
+
+# Koda her guncelleme gelince APK derlenir ve
+# Releases sayfasinda "son-surum" olarak yayinlanir.
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  derle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: APK derle
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: APK'yi adlandir
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk nsobd2.apk
+
+      - name: Son surumu yayinla
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete son-surum -y --cleanup-tag || true
+          gh release create son-surum nsobd2.apk \
+            --target "${{ github.sha }}" \
+            --title "NS OBD2 — son sürüm (v1.0.${{ github.run_number }})" \
+            --notes "Otomatik derleme. nsobd2.apk dosyasını indirip kur." \
+            --latest

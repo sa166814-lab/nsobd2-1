@@ -108,6 +108,7 @@ class EcuLabActivity : AppCompatActivity() {
         ))
         root.addView(bigButton("⚙️ ARAÇ AYARLARI (motor hacmi)", "#484F58") { aracAyarlari() })
         root.addView(bigButton("🔐 SESSİZ KEŞİF — AŞAMA 5A", "#9E6A03") { sessizKesif() })
+        root.addView(bigButton("📡 ADRES TARAMASI (01-FF)", "#0E7490") { adresTaramasi() })
 
         val rowCmd = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -871,6 +872,45 @@ class EcuLabActivity : AppCompatActivity() {
             }
             .setNegativeButton("Vazgeç", null)
             .show()
+    }
+
+    /** Bu pindeki tum adreslere "canli mi?" (3E) sorar. Salt okunur. */
+    private fun adresTaramasi() {
+        if (!guard()) return
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("📡 Adres Taraması")
+            .setMessage(
+                "01-FF arası her adrese sadece \"canlı mısın?\" (3E) sorulur. " +
+                        "Hiçbir şey yazılmaz.\n\n" +
+                        "• Kontak AÇIK, motor KAPALI\n" +
+                        "• Akü sağlam (12 V üstü)\n\n" +
+                        "Hızlı: ~5-7 dk\nHızlı + Yavaş: ~15-20 dk"
+            )
+            .setPositiveButton("Hızlı") { _, _ -> adresTaramasiBaslat(false) }
+            .setNeutralButton("Hızlı + Yavaş") { _, _ -> adresTaramasiBaslat(true) }
+            .setNegativeButton("Vazgeç", null)
+            .show()
+    }
+
+    private fun adresTaramasiBaslat(yavasDaTara: Boolean) {
+        busy = true
+        lifecycleScope.launch {
+            try {
+                if (ensureConnected()) {
+                    EcuDiscovery.adresTaramasi(
+                        gonder = { cmd -> conn.sendCommand(cmd) },
+                        yaz = { satir -> log(satir) },
+                        yavasDaTara = yavasDaTara
+                    )
+                    val saved = ReportStore.save(this@EcuLabActivity, "adres", logBuffer.toString())
+                    log("💾 Tarama raporu kaydedildi: ${saved.name}")
+                    toast("Adres taraması tamam")
+                }
+            } catch (e: Exception) {
+                log("❌ Tarama hatası: ${e.message}")
+            }
+            busy = false
+        }
     }
 
     private fun shareReport() {
