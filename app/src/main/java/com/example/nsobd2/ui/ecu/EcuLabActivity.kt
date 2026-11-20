@@ -107,8 +107,6 @@ class EcuLabActivity : AppCompatActivity() {
             "🧹 Ekranı Temizle", "#6E7681", { logBuffer.setLength(0); tvLog.text = "" }
         ))
         root.addView(bigButton("⚙️ ARAÇ AYARLARI (motor hacmi)", "#484F58") { aracAyarlari() })
-        root.addView(bigButton("🔐 SESSİZ KEŞİF — AŞAMA 5A", "#9E6A03") { sessizKesif() })
-        root.addView(bigButton("📡 ADRES TARAMASI (01-FF)", "#0E7490") { adresTaramasi() })
         root.addView(bigButton("🧪 PİN TESTİ (tam teşhis)", "#B91C1C") { pinTesti() })
         root.addView(bigButton("⛔ TESTİ DURDUR", "#6E7681") {
             com.example.nsobd2.data.PinTesti.iptal = true
@@ -837,86 +835,6 @@ class EcuLabActivity : AppCompatActivity() {
     }
 
     // ==================================================== AŞAMA 5A — KEŞİF
-
-    /**
-     * Beyne PSA'ya özel KWP servisleriyle SORU sorar, hiçbir şey yazmaz.
-     * Yazma / aktüatör / flash servisleri EcuDiscovery içinde kod
-     * seviyesinde engellidir; kazara gönderilemez.
-     */
-    private fun sessizKesif() {
-        if (!guard()) return
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("🔐 Sessiz Keşif (Aşama 5A)")
-            .setMessage(
-                "Beyne sadece SORU sorulacak, hiçbir şey yazılmayacak.\n\n" +
-                        "Yazma, aktüatör ve flash servisleri kod seviyesinde engelli.\n\n" +
-                        "ŞARTLAR:\n" +
-                        "• Kontak AÇIK, motor KAPALI\n" +
-                        "• Araç park hâlinde\n" +
-                        "• Akü sağlam (12 V üstü)\n\n" +
-                        "Yaklaşık 3-4 dakika sürer. Başlansın mı?"
-            )
-            .setPositiveButton("Başlat") { _, _ ->
-                busy = true
-                lifecycleScope.launch {
-                    try {
-                        if (ensureConnected()) {
-                            EcuDiscovery.kesfet(
-                                gonder = { cmd -> conn.sendCommand(cmd) },
-                                yaz = { satir -> log(satir) }
-                            )
-                            val saved = ReportStore.save(this@EcuLabActivity, "kesif", logBuffer.toString())
-                            log("💾 Keşif raporu kaydedildi: ${saved.name}")
-                            toast("Keşif tamam")
-                        }
-                    } catch (e: Exception) {
-                        log("❌ Keşif hatası: ${e.message}")
-                    }
-                    busy = false
-                }
-            }
-            .setNegativeButton("Vazgeç", null)
-            .show()
-    }
-
-    /** Bu pindeki tum adreslere "canli mi?" (3E) sorar. Salt okunur. */
-    private fun adresTaramasi() {
-        if (!guard()) return
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("📡 Adres Taraması")
-            .setMessage(
-                "01-FF arası her adrese sadece \"canlı mısın?\" (3E) sorulur. " +
-                        "Hiçbir şey yazılmaz.\n\n" +
-                        "• Kontak AÇIK, motor KAPALI\n" +
-                        "• Akü sağlam (12 V üstü)\n\n" +
-                        "Hızlı: ~5-7 dk\nHızlı + Yavaş: ~15-20 dk"
-            )
-            .setPositiveButton("Hızlı") { _, _ -> adresTaramasiBaslat(false) }
-            .setNeutralButton("Hızlı + Yavaş") { _, _ -> adresTaramasiBaslat(true) }
-            .setNegativeButton("Vazgeç", null)
-            .show()
-    }
-
-    private fun adresTaramasiBaslat(yavasDaTara: Boolean) {
-        busy = true
-        lifecycleScope.launch {
-            try {
-                if (ensureConnected()) {
-                    EcuDiscovery.adresTaramasi(
-                        gonder = { cmd -> conn.sendCommand(cmd) },
-                        yaz = { satir -> log(satir) },
-                        yavasDaTara = yavasDaTara
-                    )
-                    val saved = ReportStore.save(this@EcuLabActivity, "adres", logBuffer.toString())
-                    log("💾 Tarama raporu kaydedildi: ${saved.name}")
-                    toast("Adres taraması tamam")
-                }
-            } catch (e: Exception) {
-                log("❌ Tarama hatası: ${e.message}")
-            }
-            busy = false
-        }
-    }
 
     /** Tum baglanti testleri tek butonda: hizli/yavas init, baud, anahtar byte. */
     private fun pinTesti() {
