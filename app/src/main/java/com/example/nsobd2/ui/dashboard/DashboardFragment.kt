@@ -31,6 +31,9 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.OnInitListener {
+    /** Sesli uyarı tekrar tekrar çalmasın diye son durum. */
+    private var sonUyariKritik = false
+
 
     private val viewModel: VehicleViewModel by activityViewModels()
     private lateinit var tts: TextToSpeech
@@ -213,10 +216,19 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.sensorWarnings.collect { warnings ->
                     if (warnings.isEmpty()) {
+                        sonUyariKritik = false
                         tvSensorWarning.visibility = View.GONE
                     } else {
                         tvSensorWarning.visibility = View.VISIBLE
                         val critical = warnings.any { it.severity == LiveSensorCheck.Severity.CRITICAL }
+                        // Kritik uyarı YENİ başladıysa sesli uyar (sürüşte ekrana bakmayabilirsin)
+                        if (critical && !sonUyariKritik) {
+                            try {
+                                android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100)
+                                    .startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 1500)
+                            } catch (_: Exception) {}
+                        }
+                        sonUyariKritik = critical
                         tvSensorWarning.setBackgroundColor(
                             android.graphics.Color.parseColor(if (critical) "#B71C1C" else "#E65100")
                         )
@@ -613,7 +625,7 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
         }
         AlertDialog.Builder(requireContext())
             .setTitle("🛢 Depo Kapasitesi (L)")
-            .setMessage("Peugeot 206 1.1 default 50 L'dir.")
+            .setMessage("Peugeot 206 deposu 50 L'dir.")
             .setView(edit)
             .setPositiveButton("Kaydet") { _, _ ->
                 val v = edit.text.toString().replace(",", ".").toDoubleOrNull() ?: current

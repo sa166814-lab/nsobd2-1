@@ -116,7 +116,7 @@ object DtcHistoryStore {
     fun exportText(context: Context): String {
         val sb = StringBuilder()
         sb.append("NSOBD2 — ARIZA GEÇMİŞİ\n")
-        sb.append("Araç: Peugeot 206 1.1\n")
+        sb.append("Araç: ").append(AppPrefs.aracEtiketi(context)).append("\n")
         sb.append("Çıkarma tarihi: ")
             .append(SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.US).format(Date()))
             .append("\n\n")

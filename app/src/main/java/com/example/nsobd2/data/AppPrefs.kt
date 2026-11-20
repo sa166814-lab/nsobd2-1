@@ -40,6 +40,10 @@ object AppPrefs {
     fun setEngineLiters(ctx: Context, v: Double) =
         p(ctx).edit().putString("engine_liters", v.toString()).apply()
 
+    /** Raporlarda kullanılan araç adı, ayarlardaki motor hacmine göre. */
+    fun aracEtiketi(ctx: Context): String =
+        "Peugeot 206 " + String.format(java.util.Locale.US, "%.1f", getEngineLiters(ctx))
+
     /** Formülde kullanılan hacim, metreküp (1.4 L -> 0.0014) */
     fun getEngineM3(ctx: Context): Double = getEngineLiters(ctx) / 1000.0
 

@@ -49,6 +49,19 @@ object LiveSensorCheck {
                     "Sensör aşırı yüksek (${temp.toInt()}°C) okuyor. Gerçek hararet ya da sensör arızası.",
                     Severity.CRITICAL
                 ))
+            } else if (engineRunning && temp >= 112) {
+                // 206 TU motorlarda fan ~97°C'de devreye girer; 110 üstü tehlike.
+                warnings.add(Warning(
+                    "🔥 HARARET",
+                    "${temp.toInt()}°C! Güvenli bir yerde dur, motoru hemen kapatma; rölantide fanın çalışıp çalışmadığına bak. Fan dönmüyorsa motoru kapat.",
+                    Severity.CRITICAL
+                ))
+            } else if (engineRunning && temp >= 105) {
+                warnings.add(Warning(
+                    "Hararet yükseliyor",
+                    "${temp.toInt()}°C — normalde fan 97°C civarı devreye girer. Fan çalışıyor mu kontrol et.",
+                    Severity.WARNING
+                ))
             }
         }
 

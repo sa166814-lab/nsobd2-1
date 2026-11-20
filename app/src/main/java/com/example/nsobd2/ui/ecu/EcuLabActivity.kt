@@ -107,6 +107,7 @@ class EcuLabActivity : AppCompatActivity() {
             "🧹 Ekranı Temizle", "#6E7681", { logBuffer.setLength(0); tvLog.text = "" }
         ))
         root.addView(bigButton("⚙️ ARAÇ AYARLARI (motor hacmi)", "#484F58") { aracAyarlari() })
+        root.addView(bigButton("🔬 LAMBDA TESTİ (gaz ver-bırak)", "#0E7490") { lambdaTesti() })
         root.addView(bigButton("🧪 PİN TESTİ (tam teşhis)", "#B91C1C") { pinTesti() })
         root.addView(bigButton("⛔ TESTİ DURDUR", "#6E7681") {
             com.example.nsobd2.data.PinTesti.iptal = true
@@ -154,7 +155,7 @@ class EcuLabActivity : AppCompatActivity() {
         } catch (_: Exception) {}
 
         log("🧠 BEYİN LAB hazır.")
-        log("Peugeot 206 1.1 • ISO 14230-4 KWP FAST")
+        log("${AppPrefs.aracEtiketi(this)} • ISO 14230-4 KWP FAST")
         log("──────────────────────────────")
         doConnect()
     }
@@ -763,7 +764,7 @@ class EcuLabActivity : AppCompatActivity() {
             log("║   NSOBD2 — TAM BEYİN RAPORU  ║")
             log("╚══════════════════════════════╝")
             log("Tarih: $ts")
-            log("Araç : Peugeot 206 1.1")
+            log("Araç : ${AppPrefs.aracEtiketi(this@EcuLabActivity)}")
             ask("ATRV", "akü gerilimi")
             ask("ATDP", "protokol")
 
@@ -835,6 +836,180 @@ class EcuLabActivity : AppCompatActivity() {
     }
 
     // ==================================================== AŞAMA 5A — KEŞİF
+
+    // =================================================================
+    //  LAMBDA TESTİ — rölanti + gaz ver/bırak
+    // =================================================================
+    // Teşhis Et sadece rölantiye bakıyor. Rölantide lambda düşük kalıyorsa
+    // iki ihtimal var: sensör ölü mü, yoksa motor gerçekten fakir mi?
+    // Gaz verince her sağlam sensör 0.8 V üstüne çıkar (zengin karışım),
+    // gazı bırakınca 0.2 V altına iner (yakıt kesme). Bu test ikisini ayırır.
+
+    private fun lambdaTesti() {
+        if (!guard()) return
+        val yakit = if (AppPrefs.isLpgMode(this)) "LPG" else "BENZİN"
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("🔬 Lambda Testi")
+            .setMessage(
+                "Şu an yakıt modu: $yakit (ayarlardan değişir)\n\n" +
+                        "• Motor ÇALIŞIYOR ve SICAK olmalı (fan bir kez çalışmış olsun)\n" +
+                        "• Araç boşta, el freni çekili\n\n" +
+                        "1) 15 sn rölanti ölçümü — dokunma\n" +
+                        "2) Bip sesinden sonra: gaza SONUNA kadar bas, 2 sn tut, BIRAK.\n" +
+                        "   Bunu 3 kez tekrarla (20 sn).\n\n" +
+                        "LPG'li araçta ikisini de ayrı ayrı yapmak en iyisi."
+            )
+            .setPositiveButton("Başlat") { _, _ ->
+                busy = true
+                window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                lifecycleScope.launch {
+                    try { lambdaTestiIc(yakit) } catch (e: Exception) { log("❌ Lambda testi hatası: ${e.message}") }
+                    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    busy = false
+                }
+            }
+            .setNegativeButton("Vazgeç", null)
+            .show()
+    }
+
+    private fun bip() {
+        try {
+            android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100)
+                .startTone(android.media.ToneGenerator.TONE_PROP_BEEP2, 600)
+        } catch (_: Exception) {}
+    }
+
+    /** 0.45 V çizgisini kaç kez geçti (zengin<->fakir salınım sayısı). */
+    private fun gecisSayisi(l: List<Double>): Int {
+        var n = 0
+        for (i in 1 until l.size) if ((l[i - 1] < 0.45) != (l[i] < 0.45)) n++
+        return n
+    }
+
+    private suspend fun lambdaTestiIc(yakit: String) {
+        if (!ensureConnected()) return
+        log("")
+        log("══════ 🔬 LAMBDA TESTİ ($yakit) ══════")
+
+        val rpm0 = pid2("0C")?.let { it / 4.0 }
+        if (rpm0 == null || rpm0 < 400) {
+            log("❌ Motor çalışmıyor (devir: ${rpm0?.toInt() ?: "okunamadı"}). Motoru çalıştırıp tekrar dene.")
+            return
+        }
+        val su = pid1("05")?.let { it - 40 }
+        log("Devir: ${rpm0.toInt()} d/dk, Su: ${su ?: "?"} °C")
+        if (su != null && su < 70) {
+            log("⚠️ Motor henüz soğuk ($su °C). Lambda 70°C altında güvenilir değil.")
+            log("   Biraz ısınsın, sonra tekrar dene.")
+            return
+        }
+
+        // ---- 1) RÖLANTİ
+        log("")
+        log("── 1/2  Rölanti ölçümü (15 sn) — dokunma ──")
+        val onR = mutableListOf<Double>(); val arkaR = mutableListOf<Double>()
+        val stftR = mutableListOf<Double>(); val ltftR = mutableListOf<Double>()
+        val durumlar = mutableListOf<Int>()
+        val t0 = System.currentTimeMillis()
+        while (System.currentTimeMillis() - t0 < 15_000) {
+            pid1("14")?.let { onR.add(it / 200.0) }
+            pid1("15")?.let { arkaR.add(it / 200.0) }
+            pid1("06")?.let { stftR.add((it - 128) * 100.0 / 128.0) }
+            if (durumlar.size < 5) pid1("03")?.let { durumlar.add(it) }
+        }
+        pid1("07")?.let { ltftR.add((it - 128) * 100.0 / 128.0) }
+        if (onR.size < 5) {
+            log("❌ Ön lambda (PID 14) okunamadı. Bağlantıyı kontrol et.")
+            return
+        }
+        val kapaliCevrim = durumlar.any { it == 2 }
+        log("   Ön lambda : ort ${f(avg(onR), 2)} V (${f(onR.min(), 2)}–${f(onR.max(), 2)}), ${gecisSayisi(onR)} salınım")
+        if (arkaR.isNotEmpty())
+            log("   Arka lambda: ort ${f(avg(arkaR), 2)} V (${f(arkaR.min(), 2)}–${f(arkaR.max(), 2)}), ${gecisSayisi(arkaR)} salınım")
+        if (stftR.isNotEmpty()) log("   Kısa düzeltme (STFT): ort ${f(avg(stftR))} %")
+        if (ltftR.isNotEmpty()) log("   Uzun düzeltme (LTFT): ${f(ltftR.first())} %")
+        log("   Yakıt sistemi: ${when {
+            durumlar.isEmpty() -> "okunamadı"
+            kapaliCevrim -> "kapalı çevrim (lambdayı kullanıyor) ✅"
+            durumlar.any { it == 1 } -> "açık çevrim — motor soğuk sayılıyor"
+            durumlar.any { it == 8 || it == 16 } -> "ARIZA yüzünden açık çevrim ⚠️"
+            else -> "açık çevrim (kod ${durumlar.first()})"
+        }}")
+
+        // ---- 2) GAZ VER / BIRAK
+        log("")
+        log("── 2/2  BİP'ten sonra: gaza SONUNA kadar bas, 2 sn tut, BIRAK. 3 kez. ──")
+        delay(1500); bip()
+        val onG = mutableListOf<Pair<Double, Double>>()   // (devir, voltaj)
+        val t1 = System.currentTimeMillis()
+        while (System.currentTimeMillis() - t1 < 20_000) {
+            val r = pid2("0C")?.let { it / 4.0 } ?: continue
+            val v = pid1("14")?.let { it / 200.0 } ?: continue
+            onG.add(r to v)
+        }
+        bip()
+        log("   Bitti, gazı bırakabilirsin. (${onG.size} ölçüm)")
+
+        val maxDevir = onG.maxOfOrNull { it.first } ?: 0.0
+        val gazdaMax = onG.filter { it.first > 2000 }.maxOfOrNull { it.second }
+        val tumMax = onG.maxOfOrNull { it.second } ?: 0.0
+        val tumMin = onG.minOfOrNull { it.second } ?: 1.0
+        log("   En yüksek devir: ${maxDevir.toInt()} d/dk")
+        log("   Ön lambda en yüksek: ${f(tumMax, 2)} V, en düşük: ${f(tumMin, 2)} V")
+
+        // ---- HÜKÜM
+        log("")
+        log("══════ SONUÇ ══════")
+        val sonuc = mutableListOf<String>()
+        var sensorSaglam = false
+
+        if (maxDevir < 2000) {
+            sonuc += "⚪ Gaz testi geçersiz: devir 2000'i geçmedi (${maxDevir.toInt()}). Gaza daha sert bas, tekrar dene."
+        } else {
+            val zirve = gazdaMax ?: tumMax
+            when {
+                zirve >= 0.75 -> {
+                    sensorSaglam = true
+                    sonuc += "🟢 Ön lambda SAĞLAM — gaz verince ${f(zirve, 2)} V'a çıktı (zengini görüyor)."
+                }
+                zirve >= 0.60 -> sonuc += "🟠 Ön lambda YORGUN — gazda sadece ${f(zirve, 2)} V (sağlam sensör 0.8 V üstü). Yakında değişim."
+                else -> sonuc += "🔴 Ön lambda ÖLÜ — gaz verince bile ${f(zirve, 2)} V. Zengin karışımı göremiyor, DEĞİŞMELİ."
+            }
+            if (tumMin <= 0.20) sonuc += "🟢 Gazı bırakınca ${f(tumMin, 2)} V'a indi (yakıt kesme doğru algılandı)."
+            else sonuc += "🟠 Gazı bırakınca sadece ${f(tumMin, 2)} V'a indi (0.2 V altı beklenir) — sensör yavaş."
+        }
+
+        val onOrt = avg(onR)
+        val stftOrt = if (stftR.isEmpty()) 0.0 else avg(stftR)
+        val toplamDuzeltme = stftOrt + (ltftR.firstOrNull() ?: 0.0)
+        if (sensorSaglam && onOrt < 0.35 && toplamDuzeltme > 10) {
+            sonuc += "🟠 Sensör sağlam ama rölantide motor FAKİR (düzeltme +${f(toplamDuzeltme)}%).\n" +
+                    "   Sensörü değiştirmek çözmez. Bakılacaklar: emme manifoldu/vakum hortumu kaçağı" +
+                    (if (yakit == "LPG") ",\n   LPG beyni/regülatör ayarı (benzinde de test et, benzinde normalse sorun LPG ayarında)." else
+                        ", yakıt basıncı, enjektörler.")
+        } else if (toplamDuzeltme < -10) {
+            sonuc += "🟠 Motor ZENGİN çalışıyor (düzeltme ${f(toplamDuzeltme)}%). Hava filtresi, kaçıran enjektör" +
+                    (if (yakit == "LPG") ", LPG fazla gaz veriyor olabilir." else ", su sıcaklık sensörü.")
+        } else if (sensorSaglam) {
+            sonuc += "🟢 Karışım dengeli (toplam düzeltme ${f(toplamDuzeltme)}%)."
+        }
+
+        val onGecis = gecisSayisi(onR)
+        if (kapaliCevrim && onGecis < 2)
+            sonuc += "🟠 Rölantide ön lambda neredeyse hiç salınmadı ($onGecis kez/15 sn) — tembel sensör ya da sürekli fakir/zengin."
+
+        if (arkaR.size >= 10 && onGecis >= 4) {
+            val arkaGecis = gecisSayisi(arkaR)
+            if (arkaGecis >= onGecis * 0.7)
+                sonuc += "🔴 Arka lambda ön kadar oynuyor ($arkaGecis/$onGecis) — KATALİZÖR verimi düşük."
+            else
+                sonuc += "🟢 Katalizör çalışıyor (arka lambda sakin: ${f(avg(arkaR), 2)} V)."
+        }
+
+        sonuc.forEach { log(it) }
+        val saved = ReportStore.save(this, "lambda", logBuffer.toString())
+        log("💾 Kaydedildi: ${saved.name}")
+    }
 
     /** Tum baglanti testleri tek butonda: hizli/yavas init, baud, anahtar byte. */
     private fun pinTesti() {

@@ -172,7 +172,7 @@ class DiagnosticsFragment : Fragment(R.layout.fragment_diagnostics) {
     ): String {
         val sb = StringBuilder()
         sb.append("NSOBD2 — ARIZA OKUMA RAPORU\n")
-        sb.append("Araç : Peugeot 206 1.1\n")
+        sb.append("Araç : ").append(com.example.nsobd2.data.AppPrefs.aracEtiketi(requireContext())).append("\n")
         sb.append("Tarih: ").append(now()).append("\n")
         sb.append("VIN  : ").append(prefs().getString("vin", "okunmadı")).append("\n")
         sb.append("\n── DURUM ──\n").append(milText).append("\n")
