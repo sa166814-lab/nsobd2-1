@@ -38,7 +38,8 @@ import kotlin.math.sqrt
  */
 class EcuLabActivity : AppCompatActivity() {
 
-    private val conn = Elm327Connection()
+    // Ana uygulamayla AYNI baglanti — ikinci soket ELM'yi kilitliyordu
+    private val conn = com.example.nsobd2.network.ElmShared.connection
 
     private lateinit var tvStatus: TextView
     private lateinit var tvLog: TextView
@@ -157,12 +158,18 @@ class EcuLabActivity : AppCompatActivity() {
         log("🧠 BEYİN LAB hazır.")
         log("${AppPrefs.aracEtiketi(this)} • ISO 14230-4 KWP FAST")
         log("──────────────────────────────")
+        com.example.nsobd2.network.ElmShared.labActive = true
         doConnect()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        lifecycleScope.launch { try { conn.disconnect() } catch (_: Exception) {} }
+        // lifecycleScope burada iptal edilmis olur (eskiden kapatma hic calismiyordu).
+        // Testler ELM ayarlarini (header, adres, baud) degistirmis olabilir: temiz ayarla yeniden kur.
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            try { if (conn.isConnected) conn.reconnect() } catch (_: Exception) {}
+            com.example.nsobd2.network.ElmShared.labActive = false
+        }
     }
 
     // ------------------------------------------------------------ YARDIMCILAR
@@ -316,7 +323,9 @@ class EcuLabActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val ip = etIp.text.toString().trim().ifEmpty { "192.168.0.10" }
             val port = etPort.text.toString().trim().toIntOrNull() ?: 35000
-            val res = withContext(Dispatchers.IO) {
+            // Ana ekran zaten bagliysa ve ELM cevap veriyorsa yeniden baglanma
+            val zatenBagli = conn.isConnected && conn.sendCommand("ATRV").uppercase().contains("V")
+            val res = if (zatenBagli) "Ana bağlantı kullanılıyor" else withContext(Dispatchers.IO) {
                 conn.connect(ip, port) { s -> status("🟡 $s") }
             }
             log("── $res")

@@ -11,8 +11,20 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 
+/**
+ * Uygulamanin TEK ELM baglantisi. WiFi ELM327 ayni anda tek istemci kabul eder;
+ * eskiden Beyin Lab ikinci bir soket aciyordu ve ana baglantiyla cakisiyordu.
+ */
+object ElmShared {
+    val connection = Elm327Connection()
+    /** Beyin Lab acikken ana ekran sorgulari ve surus kaydi ELM'ye dokunmaz. */
+    @Volatile var labActive = false
+}
+
 class Elm327Connection {
-    var isConnected = false
+    @Volatile var isConnected = false
+    /** Kullanici "Baglantiyi kes" dediyse otomatik yeniden baglanma yapilmaz. */
+    @Volatile var manualDisconnect = false
     private var socket: Socket? = null
     private var inStream: InputStream? = null
     private var outStream: OutputStream? = null
@@ -23,7 +35,7 @@ class Elm327Connection {
     suspend fun connect(ip: String = "192.168.0.10", port: Int = 35000, updateStatus: suspend (String) -> Unit): String {
         return withContext(Dispatchers.IO) {
             try {
-                lastIp = ip; lastPort = port
+                lastIp = ip; lastPort = port; manualDisconnect = false
                 try { socket?.close() } catch (_: Exception) {}
                 socket = null; inStream = null; outStream = null; isConnected = false
 
@@ -126,9 +138,13 @@ class Elm327Connection {
 
     /** Son kullanilan IP/port ile bastan baglanir (ATZ + protokol init). Surus kaydi kopunca kullanilir. */
     suspend fun reconnect(): Boolean {
+        if (manualDisconnect) return false
         connect(lastIp, lastPort) { }
         return isConnected
     }
+
+    /** Kullanici istegiyle kapatma: otomatik yeniden baglanmayi da durdurur. */
+    suspend fun disconnectByUser() { manualDisconnect = true; disconnect() }
 
     suspend fun disconnect() {
         withContext(Dispatchers.IO) {

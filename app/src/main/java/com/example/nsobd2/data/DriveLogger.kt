@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
 import com.example.nsobd2.network.Elm327Connection
+import com.example.nsobd2.network.ElmShared
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -97,6 +98,9 @@ class DriveLogger(private val connection: Elm327Connection) {
             // kayit bos satirlarla devam ediyordu. Artik kopmayi algilayip yeniden baglaniyoruz.
             while (isActive) {
                 val tick = System.currentTimeMillis()
+
+                if (connection.manualDisconnect) break           // kullanici baglantiyi kesti
+                if (ElmShared.labActive) { delay(1000); continue } // Beyin Lab ELM'yi kullaniyor
 
                 if (!connection.isConnected || emptyStreak >= 2) {
                     if (lostSinceMs == 0L) { lostSinceMs = tick; obdDropCount++ }

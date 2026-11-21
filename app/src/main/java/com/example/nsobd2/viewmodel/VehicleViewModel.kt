@@ -7,6 +7,7 @@ import com.example.nsobd2.data.AppPrefs
 import com.example.nsobd2.data.BatteryHealthStore
 import com.example.nsobd2.data.DriveHistoryStore
 import com.example.nsobd2.data.DriveLogger
+import com.example.nsobd2.network.ElmShared
 import com.example.nsobd2.data.DriveSummary
 import com.example.nsobd2.data.DtcHistoryStore
 import com.example.nsobd2.data.GpsTracker
@@ -29,7 +30,7 @@ enum class AppScreen { CONNECTION, DASHBOARD, DIAGNOSTICS, INSPECTION, TESTS }
 
 class VehicleViewModel : ViewModel() {
 
-    val connection = Elm327Connection()
+    val connection = ElmShared.connection
     private val repository = ObdRepository(connection)
     val driveLogger = DriveLogger(connection)
     var gpsTracker: GpsTracker? = null
@@ -124,6 +125,26 @@ class VehicleViewModel : ViewModel() {
         }
     }
 
+    /** "Bağlantıyı Kes" butonu: kaydı bitirir, soketi kapatır, durumu günceller. */
+    fun disconnectFromVehicle(ctx: Context) {
+        viewModelScope.launch {
+            if (driveLogger.isLogging.value) toggleDriveLog(ctx)
+            crankingMonitorActive = false
+            connection.disconnectByUser()
+            _connectionStatus.value = "Bağlantı kesildi"
+        }
+    }
+
+    /** Beyin Lab'dan dönünce: Lab bağlantıyı açık bıraktıysa ana ekran sorgusunu yeniden başlat. */
+    fun onReturnFromLab() {
+        if (connection.isConnected) {
+            if (!_connectionStatus.value.contains("Başarılı")) _connectionStatus.value = "Bağlantı Başarılı! (Beyin Lab sonrası)"
+            startPolling()
+        } else if (!connection.manualDisconnect && _connectionStatus.value.contains("Başarılı")) {
+            _connectionStatus.value = "Bağlantı koptu — tekrar bağlan"
+        }
+    }
+
     // DONMA DÜZELTME: Logger açıkken de polling devam eder ama LOGGER KENDİSİ veriyi üretir
     // Logger liveData'yı _uiState'e yazar
     init {
@@ -142,13 +163,18 @@ class VehicleViewModel : ViewModel() {
         }
     }
 
+    private var pollingJob: kotlinx.coroutines.Job? = null
+
     private fun startPolling() {
-        viewModelScope.launch(Dispatchers.IO) {
+        if (pollingJob?.isActive == true) return   // ikinci döngü açılmasın
+        pollingJob = viewModelScope.launch(Dispatchers.IO) {
             var loopCounter = 0
             val dataCache = mutableMapOf<String, ParseResult>()
             // Kayıt sürerken bağlantı koparsa logger yeniden bağlar; polling döngüsü ölmesin
-            while (isActive && (connection.isConnected || driveLogger.isLogging.value)) {
+            while (isActive && (connection.isConnected || driveLogger.isLogging.value || ElmShared.labActive)) {
                 try {
+                    // Beyin Lab açıkken ELM onun — araya komut sokma
+                    if (ElmShared.labActive || !connection.isConnected) { delay(500); continue }
                     // Logger çalışıyorsa polling DUR — logger zaten veriyi üretiyor ve _uiState'e yazıyor
                     if (driveLogger.isLogging.value) { delay(500); continue }
 

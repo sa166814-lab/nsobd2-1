@@ -66,9 +66,7 @@ class ConnectionFragment : Fragment(R.layout.fragment_connection) {
 
         // 3. BAĞLANTIYI KES BUTONU
         btnDisconnect.setOnClickListener {
-            viewLifecycleOwner.lifecycleScope.launch {
-                viewModel.connection.disconnect()
-            }
+            viewModel.disconnectFromVehicle(requireContext())
         }
     }
 }

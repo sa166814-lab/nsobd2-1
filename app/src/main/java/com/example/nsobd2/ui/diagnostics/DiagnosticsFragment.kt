@@ -43,6 +43,7 @@ class DiagnosticsFragment : Fragment(R.layout.fragment_diagnostics) {
     override fun onResume() {
         super.onResume()
         viewModel.setActiveScreen(AppScreen.DIAGNOSTICS)
+        viewModel.onReturnFromLab()
         refreshHistory()
         showSavedVin()
     }
@@ -398,15 +399,12 @@ class DiagnosticsFragment : Fragment(R.layout.fragment_diagnostics) {
             .setTitle("🧠 Beyin Lab")
             .setMessage(
                 "Beyin Lab derin tarama yapar (Mod 05 / 06 / 02, PID taraması).\n\n" +
-                        "Kendi bağlantısını kurduğu için ana bağlantı kapatılacak. " +
-                        "Geri döndüğünde Bağlantı sekmesinden tekrar bağlan.\n\n" +
+                        "Ana bağlantıyı kullanır; bağlı değilsen kendisi bağlanır. " +
+                        "Lab açıkken ana ekran verisi durur, çıkınca kendiliğinden devam eder.\n\n" +
                         "Motor sıcakken en iyi sonucu verir."
             )
             .setPositiveButton("Aç") { _, _ ->
-                viewLifecycleOwner.lifecycleScope.launch {
-                    try { viewModel.connection.disconnect() } catch (_: Exception) {}
-                    startActivity(Intent(requireContext(), EcuLabActivity::class.java))
-                }
+                startActivity(Intent(requireContext(), EcuLabActivity::class.java))
             }
             .setNegativeButton("Vazgeç", null)
             .show()
