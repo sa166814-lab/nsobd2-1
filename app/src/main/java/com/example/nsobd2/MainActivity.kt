@@ -3,6 +3,9 @@ package com.example.nsobd2
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.WindowManager
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -31,6 +34,15 @@ class MainActivity : AppCompatActivity() {
 
         viewModel.gpsTracker = GpsTracker(applicationContext)
         viewModel.initFromPrefs(this)
+
+        // SÜRÜŞ KAYDI AÇIKKEN EKRAN KAPANMASIN — kapanınca Android WiFi/GPS'i uyutuyor, kayıt kesiliyor.
+        // Activity seviyesinde: hangi sekmede olursan ol çalışır, kayıt bitince normale döner.
+        lifecycleScope.launch {
+            viewModel.driveLogger.isLogging.collect { logging ->
+                if (logging) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+        }
 
         // OTOMATİK BAĞLANMA
         if (AppPrefs.getAutoConnect(this)) {
