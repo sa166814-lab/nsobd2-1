@@ -17,6 +17,8 @@ import java.net.SocketTimeoutException
  */
 object ElmShared {
     val connection = Elm327Connection()
+    /** MainActivity doldurur; soketi WiFi agina baglamak icin gerekli. */
+    @Volatile var appContext: android.content.Context? = null
     /** Beyin Lab acikken ana ekran sorgulari ve surus kaydi ELM'ye dokunmaz. */
     @Volatile var labActive = false
 }
@@ -61,6 +63,9 @@ class Elm327Connection {
                 while (!connected && attempts < 3) {
                     try {
                         socket = Socket()
+                        // ELM'nin WiFi'sinde internet yok; Android bu durumda trafigi MOBIL VERIYE
+                        // yonlendirebiliyor ve 192.168.0.10'a hic ulasilamiyor. Soketi WiFi'ye bagla.
+                        wifiAgi()?.let { net -> try { net.bindSocket(socket) } catch (_: Exception) {} }
                         socket?.tcpNoDelay = true
                         socket?.keepAlive = true
                         socket?.receiveBufferSize = 8192
@@ -110,9 +115,27 @@ class Elm327Connection {
                 return@withContext "Bağlantı Başarılı! ($currentProtocol)"
             } catch (e: Exception) {
                 isConnected = false
-                return@withContext "HATA: Cihaza Ulaşılamadı"
+                val neden = when (e) {
+                    is java.net.SocketTimeoutException -> "zaman aşımı"
+                    is java.net.ConnectException -> "bağlantı reddedildi (ELM başka cihaza bağlı olabilir)"
+                    is java.net.NoRouteToHostException -> "ağa ulaşılamıyor"
+                    else -> e.javaClass.simpleName
+                }
+                val wifiVar = if (wifiAgi() == null) " • telefon WiFi'ye bağlı görünmüyor" else ""
+                return@withContext "HATA: Cihaza Ulaşılamadı ($neden)$wifiVar"
             }
         }
+    }
+
+    private fun wifiAgi(): android.net.Network? {
+        val ctx = ElmShared.appContext ?: return null
+        return try {
+            val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            @Suppress("DEPRECATION")
+            cm.allNetworks.firstOrNull {
+                cm.getNetworkCapabilities(it)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+            }
+        } catch (_: Exception) { null }
     }
 
     private fun shouldTryNext(r: String): Boolean {
