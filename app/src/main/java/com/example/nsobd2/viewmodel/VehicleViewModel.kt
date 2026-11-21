@@ -164,6 +164,15 @@ class VehicleViewModel : ViewModel() {
     }
 
     private var pollingJob: kotlinx.coroutines.Job? = null
+    @Volatile private var latestSample: Map<String, ParseResult> = emptyMap()
+    @Volatile private var latestSampleMs: Long = 0L
+    @Volatile private var lastBadRpmRaw: String = ""
+    private fun lastRawOf(@Suppress("UNUSED_PARAMETER") pid: String): String = connection.lastRaw
+
+    init {
+        driveLogger.sampleSource = { latestSampleMs to latestSample }
+        driveLogger.lastBadRaw = { lastBadRpmRaw }
+    }
 
     private fun startPolling() {
         if (pollingJob?.isActive == true) return   // ikinci döngü açılmasın
@@ -175,13 +184,17 @@ class VehicleViewModel : ViewModel() {
                 try {
                     // Beyin Lab açıkken ELM onun — araya komut sokma
                     if (ElmShared.labActive || !connection.isConnected) { delay(500); continue }
-                    // Logger çalışıyorsa polling DUR — logger zaten veriyi üretiyor ve _uiState'e yazıyor
-                    if (driveLogger.isLogging.value) { delay(500); continue }
-
-                    when (_currentScreen.value) {
+                    // Kayıt açıkken hangi sekmede olursan ol panel verisi okunmaya devam eder;
+                    // kayıt bu verileri alıp yazar (ELM'ye ikinci kez sorulmaz → ekran donmaz)
+                    val ekran = if (driveLogger.isLogging.value) AppScreen.DASHBOARD else _currentScreen.value
+                    when (ekran) {
                         AppScreen.DASHBOARD -> {
-                            dataMapSafePut(dataCache, "RPM", repository.getRpm())
-                            dataMapSafePut(dataCache, "SPEED", repository.getSpeed())
+                            val rpmR = repository.getRpm()
+                            if (rpmR !is ParseResult.Success) lastBadRpmRaw = lastRawOf("010C")
+                            dataMapSafePut(dataCache, "RPM", rpmR)
+                            val spdR = repository.getSpeed()
+                            dataMapSafePut(dataCache, "SPEED", spdR)
+                            if (rpmR is ParseResult.Success || spdR is ParseResult.Success) latestSampleMs = System.currentTimeMillis()
                             when (loopCounter % 6) {
                                 0 -> { dataMapSafePut(dataCache, "TEMP", repository.getCoolantTemp()); dataMapSafePut(dataCache, "LOAD", repository.getEngineLoad()) }
                                 1 -> { dataMapSafePut(dataCache, "MAP", repository.getMap()); dataMapSafePut(dataCache, "IAT", repository.getIat()) }
@@ -192,6 +205,7 @@ class VehicleViewModel : ViewModel() {
                             }
                             calculateInstantFuel(dataCache)
                             _uiState.value = HashMap(dataCache)
+                            latestSample = HashMap(dataCache)
 
                             // O2 örneğini biriktir (salınım kontrolü için)
                             (dataCache["O2"] as? ParseResult.Success)?.numericValue?.let { o2v ->

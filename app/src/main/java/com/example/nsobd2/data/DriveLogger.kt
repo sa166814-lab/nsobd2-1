@@ -70,6 +70,11 @@ class DriveLogger(private val connection: Elm327Connection) {
     var volEff: Double = 0.85
     private var logIsLpg: Boolean = false
 
+    /** ViewModel'in canlı sorgusu: (son taze okuma zamanı ms, son değerler). */
+    @Volatile var sampleSource: (() -> Pair<Long, Map<String, ParseResult>>)? = null
+    /** Teşhis: son okunamayan ham RPM cevabı. */
+    @Volatile var lastBadRaw: (() -> String)? = null
+
     private val _liveData = MutableStateFlow<Map<String, ParseResult>>(emptyMap())
     val liveData = _liveData.asStateFlow()
 
@@ -94,56 +99,32 @@ class DriveLogger(private val connection: Elm327Connection) {
             var emptyStreak = 0
             var lostSinceMs = 0L
 
-            // Eskiden "while (connection.isConnected)" idi; WiFi/ELM kopunca bayrak true kaldigi icin
-            // kayit bos satirlarla devam ediyordu. Artik kopmayi algilayip yeniden baglaniyoruz.
+            // YENİ YAPI: Kayıt ELM'ye AYRICA komut göndermiyor. Paneldeki canlı sorgu ne okuyorsa
+            // (sampleSource) onu 3 sn'de bir kaydediyor. Böylece kayıt açıkken ekran donmuyor ve
+            // CSV'deki değerler ekranda gördüğünle aynı oluyor.
             while (isActive) {
                 val tick = System.currentTimeMillis()
 
                 if (connection.manualDisconnect) break           // kullanici baglantiyi kesti
                 if (ElmShared.labActive) { delay(1000); continue } // Beyin Lab ELM'yi kullaniyor
 
-                if (!connection.isConnected || emptyStreak >= 2) {
+                val src = sampleSource
+                val (sampleMs, snap) = src?.invoke() ?: (0L to emptyMap())
+                val fresh = sampleMs > 0 && tick - sampleMs < 6000
+
+                if (!fresh) {
                     if (lostSinceMs == 0L) { lostSinceMs = tick; obdDropCount++ }
-                    _obdStatus.value = "⚠️ OBD veri gelmiyor — yeniden bağlanılıyor..."
-                    val ok = try { connection.reconnect() } catch (_: Exception) { false }
-                    if (!ok) {
-                        _obdStatus.value = "🔴 OBD bağlantısı yok — tekrar denenecek (GPS kaydı sürüyor)"
-                        delay(3000); continue
-                    }
-                    emptyStreak = 0
-                    _obdStatus.value = "🟢 OBD yeniden bağlandı"
-                }
-
-                val data = HashMap<String, String>()
-                val parsed = HashMap<String, ParseResult>()
-
-                for (cmd in commands) {
-                    if (!isActive) break
-                    val raw = connection.sendCommand(cmd.pid)
-                    val r = cmd.parse(raw)
-                    if (r !is ParseResult.Success && firstBadRaw.isEmpty() && cmd.pid == "010C")
-                        firstBadRaw = raw.ifEmpty { "(bos cevap)" }.replace(";", ",").take(80)
-                    parsed[cmd.pid] = r
-                    data[cmd.pid] = when (r) { is ParseResult.Success -> r.value; else -> "" }
-                }
-
-                // CANLI VERİ YAYINI → ViewModel._uiState'e yazar (init bloğundan)
-                val live = HashMap<String, ParseResult>()
-                parsed["010C"]?.let { live["RPM"] = it }
-                parsed["010D"]?.let { live["SPEED"] = it }
-                parsed["0105"]?.let { live["TEMP"] = it }
-                parsed["0104"]?.let { live["LOAD"] = it }
-                parsed["010B"]?.let { live["MAP"] = it }
-                parsed["010F"]?.let { live["IAT"] = it }
-                parsed["0111"]?.let { live["TPS"] = it }
-                parsed["010E"]?.let { live["AVANS"] = it }
-                parsed["0106"]?.let { live["STFT"] = it }
-                parsed["0107"]?.let { live["LTFT"] = it }
-                parsed["0114"]?.let { live["O2"] = it }
-                // HİÇBİR PID cevap vermediyse: boş satır YAZMA, kopma say
-                val anySuccess = parsed.values.any { it is ParseResult.Success }
-                if (!anySuccess) {
                     emptyStreak++
+                    // 3 tur (≈9 sn) hiç taze veri yoksa yeniden bağlan
+                    if (!connection.isConnected || emptyStreak >= 3) {
+                        _obdStatus.value = "⚠️ OBD veri gelmiyor — yeniden bağlanılıyor..."
+                        val ok = try { connection.reconnect() } catch (_: Exception) { false }
+                        _obdStatus.value = if (ok) "🟢 OBD yeniden bağlandı" else "🔴 OBD bağlantısı yok — tekrar denenecek (GPS kaydı sürüyor)"
+                        emptyStreak = 0
+                    } else {
+                        _obdStatus.value = "⚠️ OBD veri gelmiyor..."
+                    }
+                    if (firstBadRaw.isEmpty()) firstBadRaw = lastBadRaw?.invoke().orEmpty().replace(";", ",").take(80)
                     val elapsedE = System.currentTimeMillis() - tick
                     delay((intervalMs - elapsedE).coerceAtLeast(0L))
                     continue
@@ -157,7 +138,12 @@ class DriveLogger(private val connection: Elm327Connection) {
                 emptyStreak = 0
                 if (_obdStatus.value != null) _obdStatus.value = null
 
-                _liveData.value = live
+                fun v(k: String) = (snap[k] as? ParseResult.Success)?.value.orEmpty()
+                val data = mapOf(
+                    "010C" to v("RPM"), "010D" to v("SPEED"), "0105" to v("TEMP"), "0104" to v("LOAD"),
+                    "010B" to v("MAP"), "010F" to v("IAT"), "0111" to v("TPS"), "010E" to v("AVANS"),
+                    "0106" to v("STFT"), "0107" to v("LTFT"), "0114" to v("O2")
+                )
 
                 val entry = DriveLogEntry(
                     tick, data["010C"].orEmpty(), data["010D"].orEmpty(), data["0105"].orEmpty(),

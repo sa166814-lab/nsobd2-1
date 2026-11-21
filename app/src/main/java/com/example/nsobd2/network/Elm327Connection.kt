@@ -25,6 +25,8 @@ class Elm327Connection {
     @Volatile var isConnected = false
     /** Kullanici "Baglantiyi kes" dediyse otomatik yeniden baglanma yapilmaz. */
     @Volatile var manualDisconnect = false
+    /** Son komutun ham cevabi (teshis icin). */
+    @Volatile var lastRaw: String = ""
     private var socket: Socket? = null
     private var inStream: InputStream? = null
     private var outStream: OutputStream? = null
@@ -147,6 +149,7 @@ class Elm327Connection {
                     }
                 } catch (_: SocketTimeoutException) {}
                 response.toString().replace(">", "").replace("SEARCHING...", "").replace("\r", "").replace("\n", "").trim()
+                    .also { lastRaw = it.ifEmpty { "(bos cevap)" } }
             } catch (_: Exception) { isConnected = false; "" } // yazma/okuma hatasi = baglanti koptu
         }
     }
