@@ -13,9 +13,18 @@ sealed class ObdCommand(val pid: String, val name: String) {
     abstract fun parse(rawResponse: String): ParseResult
 
     protected fun getHexBytes(raw: String): List<Int> {
-        val clean = raw.replace(" ", "").replace("\r", "").replace("\n", "").replace(">", "")
-        if (clean.length < 4 || !clean.startsWith("41")) return emptyList()
-        return clean.substring(4).chunked(2).mapNotNull { it.toIntOrNull(16) }
+        val clean = raw.replace(" ", "").replace("\r", "").replace("\n", "").replace(">", "").uppercase()
+        // Cevap her zaman "41xx" ile baslamayabilir: ELM yeniden basladiginda echo acik kalir
+        // ("010C410C..."), Beyin Lab / Pin Testi yarida kalirsa header acik kalir ("83F110410C...").
+        // Bu yuzden "41"+PID kalibini cevabin icinde ariyoruz.
+        if (pid.length < 4 || !pid.startsWith("01")) {
+            if (clean.length < 4 || !clean.startsWith("41")) return emptyList()
+            return clean.substring(4).chunked(2).mapNotNull { it.toIntOrNull(16) }
+        }
+        val key = "41" + pid.substring(2, 4).uppercase()
+        val idx = clean.indexOf(key)
+        if (idx < 0) return emptyList()
+        return clean.substring(idx + 4).chunked(2).filter { it.length == 2 }.mapNotNull { it.toIntOrNull(16) }
     }
 
     object RPM : ObdCommand("010C", "Motor Devri") {

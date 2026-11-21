@@ -280,11 +280,24 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.driveLogger.obdStatus.collect { warn ->
+                    if (viewModel.driveLogger.isLogging.value && warn != null) {
+                        val count = viewModel.driveLogger.logCount.value
+                        tvLogStatus.text = "🔴 $count satır\n$warn"
+                    }
+                }
+            }
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.driveLogger.logCount.collect { count ->
                     if (viewModel.driveLogger.isLogging.value) {
                         val km = viewModel.driveLogger.totalKm.value
                         val lt = viewModel.driveLogger.totalLiters.value
-                        tvLogStatus.text = "🔴 $count satır • ${"%.2f".format(Locale.US, km)} km • ${"%.2f".format(Locale.US, lt)} L"
+                        val warn = viewModel.driveLogger.obdStatus.value
+                        tvLogStatus.text = "🔴 $count satır • ${"%.2f".format(Locale.US, km)} km • ${"%.2f".format(Locale.US, lt)} L" +
+                            (if (warn != null) "\n$warn" else "")
                     } else if (count > 0) {
                         tvLogStatus.text = "✅ Sürüş kaydedildi: $count satır."
                         tvLogStatus.visibility = View.VISIBLE

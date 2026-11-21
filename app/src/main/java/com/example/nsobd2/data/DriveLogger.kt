@@ -53,6 +53,12 @@ class DriveLogger(private val connection: Elm327Connection) {
     val totalLiters = _totalLiters.asStateFlow()
     private val _maxHp = MutableStateFlow(0.0)
 
+    // OBD BAGLANTI DURUMU — null = veri geliyor; dolu = ekranda gosterilecek uyari
+    private val _obdStatus = MutableStateFlow<String?>(null)
+    val obdStatus = _obdStatus.asStateFlow()
+    var obdDropCount: Int = 0; private set
+    var obdLostSec: Long = 0L; private set
+
     var gpsTotalKm: Double = 0.0
 
     // MOTOR HACMİ — ViewModel, kayıt başlarken AppPrefs'ten doldurur.
@@ -75,14 +81,33 @@ class DriveLogger(private val connection: Elm327Connection) {
         _entries.clear(); _logCount.value = 0; _maxRpm.value = 0; _maxSpeed.value = 0
         _maxCoolant.value = 0; _totalKm.value = 0.0; _totalLiters.value = 0.0; _maxHp.value = 0.0
         gpsTotalKm = 0.0; logIsLpg = isLpg
+        _obdStatus.value = null; obdDropCount = 0; obdLostSec = 0L
         startTimeMs = System.currentTimeMillis(); _isLogging.value = true
 
         loggingJob = scope.launch(Dispatchers.IO) {
             var lastSampleMs = System.currentTimeMillis()
             var lastSpeedKmh = 0.0
 
-            while (isActive && connection.isConnected) {
+            var emptyStreak = 0
+            var lostSinceMs = 0L
+
+            // Eskiden "while (connection.isConnected)" idi; WiFi/ELM kopunca bayrak true kaldigi icin
+            // kayit bos satirlarla devam ediyordu. Artik kopmayi algilayip yeniden baglaniyoruz.
+            while (isActive) {
                 val tick = System.currentTimeMillis()
+
+                if (!connection.isConnected || emptyStreak >= 2) {
+                    if (lostSinceMs == 0L) { lostSinceMs = tick; obdDropCount++ }
+                    _obdStatus.value = "⚠️ OBD veri gelmiyor — yeniden bağlanılıyor..."
+                    val ok = try { connection.reconnect() } catch (_: Exception) { false }
+                    if (!ok) {
+                        _obdStatus.value = "🔴 OBD bağlantısı yok — tekrar denenecek (GPS kaydı sürüyor)"
+                        delay(3000); continue
+                    }
+                    emptyStreak = 0
+                    _obdStatus.value = "🟢 OBD yeniden bağlandı"
+                }
+
                 val data = HashMap<String, String>()
                 val parsed = HashMap<String, ParseResult>()
 
@@ -107,6 +132,23 @@ class DriveLogger(private val connection: Elm327Connection) {
                 parsed["0106"]?.let { live["STFT"] = it }
                 parsed["0107"]?.let { live["LTFT"] = it }
                 parsed["0114"]?.let { live["O2"] = it }
+                // HİÇBİR PID cevap vermediyse: boş satır YAZMA, kopma say
+                val anySuccess = parsed.values.any { it is ParseResult.Success }
+                if (!anySuccess) {
+                    emptyStreak++
+                    val elapsedE = System.currentTimeMillis() - tick
+                    delay((intervalMs - elapsedE).coerceAtLeast(0L))
+                    continue
+                }
+                if (lostSinceMs > 0L) {
+                    obdLostSec += (System.currentTimeMillis() - lostSinceMs) / 1000
+                    lostSinceMs = 0L
+                    // Kopma süresince mesafe/yakıt sıçramasın
+                    lastSampleMs = System.currentTimeMillis(); lastSpeedKmh = 0.0
+                }
+                emptyStreak = 0
+                if (_obdStatus.value != null) _obdStatus.value = null
+
                 _liveData.value = live
 
                 val entry = DriveLogEntry(
@@ -158,11 +200,13 @@ class DriveLogger(private val connection: Elm327Connection) {
                 val elapsed = System.currentTimeMillis() - tick
                 delay((intervalMs - elapsed).coerceAtLeast(0L))
             }
+            if (lostSinceMs > 0L) obdLostSec += (System.currentTimeMillis() - lostSinceMs) / 1000
+            _obdStatus.value = null
             _isLogging.value = false
         }
     }
 
-    fun stopLogging() { _isLogging.value = false; loggingJob?.cancel(); loggingJob = null }
+    fun stopLogging() { _isLogging.value = false; _obdStatus.value = null; loggingJob?.cancel(); loggingJob = null }
 
     fun applyFuelConsumptionToTank(ctx: Context) {
         if (_totalLiters.value > 0.01) FuelTankStore.consume(ctx, _totalLiters.value)
@@ -229,6 +273,7 @@ class DriveLogger(private val connection: Elm327Connection) {
                 w.write("Maliyet;${"%.2f".format(Locale.US, s.cost)} TL\nMax BG;${"%.1f".format(Locale.US, s.maxHorsepower)}\n")
                 w.write("Max RPM;${s.maxRpm}\nMax Hiz;${s.maxSpeed}\nMax Hararet;${s.maxCoolant}\nEko;${s.ecoScore}/100\n")
                 w.write("Yakit Tipi;${if (logIsLpg) "LPG" else "Benzin"}\n")
+                w.write("OBD kopma;$obdDropCount\nOBD verisiz sure;${obdLostSec}sn\n")
             }
         } catch (_: Exception) { return false }
         val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)

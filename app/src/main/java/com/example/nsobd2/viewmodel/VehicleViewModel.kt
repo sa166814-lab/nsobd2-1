@@ -146,7 +146,8 @@ class VehicleViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             var loopCounter = 0
             val dataCache = mutableMapOf<String, ParseResult>()
-            while (isActive && connection.isConnected) {
+            // Kayıt sürerken bağlantı koparsa logger yeniden bağlar; polling döngüsü ölmesin
+            while (isActive && (connection.isConnected || driveLogger.isLogging.value)) {
                 try {
                     // Logger çalışıyorsa polling DUR — logger zaten veriyi üretiyor ve _uiState'e yazıyor
                     if (driveLogger.isLogging.value) { delay(500); continue }

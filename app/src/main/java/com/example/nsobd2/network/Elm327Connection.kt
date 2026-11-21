@@ -17,10 +17,13 @@ class Elm327Connection {
     private var inStream: InputStream? = null
     private var outStream: OutputStream? = null
     private val cmdMutex = Mutex()
+    private var lastIp: String = "192.168.0.10"
+    private var lastPort: Int = 35000
 
     suspend fun connect(ip: String = "192.168.0.10", port: Int = 35000, updateStatus: suspend (String) -> Unit): String {
         return withContext(Dispatchers.IO) {
             try {
+                lastIp = ip; lastPort = port
                 try { socket?.close() } catch (_: Exception) {}
                 socket = null; inStream = null; outStream = null; isConnected = false
 
@@ -110,15 +113,21 @@ class Elm327Connection {
                     while (true) {
                         if (System.currentTimeMillis() - startTime > timeoutMs) break
                         val bytesRead = inStream?.read(buffer) ?: break
-                        if (bytesRead < 0) break
+                        if (bytesRead < 0) { isConnected = false; break } // karsi taraf baglantiyi kapatti
                         val chunk = String(buffer, 0, bytesRead)
                         response.append(chunk)
                         if (chunk.contains(">")) break
                     }
                 } catch (_: SocketTimeoutException) {}
                 response.toString().replace(">", "").replace("SEARCHING...", "").replace("\r", "").replace("\n", "").trim()
-            } catch (_: Exception) { "" }
+            } catch (_: Exception) { isConnected = false; "" } // yazma/okuma hatasi = baglanti koptu
         }
+    }
+
+    /** Son kullanilan IP/port ile bastan baglanir (ATZ + protokol init). Surus kaydi kopunca kullanilir. */
+    suspend fun reconnect(): Boolean {
+        connect(lastIp, lastPort) { }
+        return isConnected
     }
 
     suspend fun disconnect() {
