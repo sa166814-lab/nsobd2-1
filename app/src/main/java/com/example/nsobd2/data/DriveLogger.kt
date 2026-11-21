@@ -58,6 +58,8 @@ class DriveLogger(private val connection: Elm327Connection) {
     val obdStatus = _obdStatus.asStateFlow()
     var obdDropCount: Int = 0; private set
     var obdLostSec: Long = 0L; private set
+    // Teshis: okunamayan ilk RPM cevabi (ham) — CSV ozetine yazilir
+    var firstBadRaw: String = ""; private set
 
     var gpsTotalKm: Double = 0.0
 
@@ -81,7 +83,7 @@ class DriveLogger(private val connection: Elm327Connection) {
         _entries.clear(); _logCount.value = 0; _maxRpm.value = 0; _maxSpeed.value = 0
         _maxCoolant.value = 0; _totalKm.value = 0.0; _totalLiters.value = 0.0; _maxHp.value = 0.0
         gpsTotalKm = 0.0; logIsLpg = isLpg
-        _obdStatus.value = null; obdDropCount = 0; obdLostSec = 0L
+        _obdStatus.value = null; obdDropCount = 0; obdLostSec = 0L; firstBadRaw = ""
         startTimeMs = System.currentTimeMillis(); _isLogging.value = true
 
         loggingJob = scope.launch(Dispatchers.IO) {
@@ -115,6 +117,8 @@ class DriveLogger(private val connection: Elm327Connection) {
                     if (!isActive) break
                     val raw = connection.sendCommand(cmd.pid)
                     val r = cmd.parse(raw)
+                    if (r !is ParseResult.Success && firstBadRaw.isEmpty() && cmd.pid == "010C")
+                        firstBadRaw = raw.ifEmpty { "(bos cevap)" }.replace(";", ",").take(80)
                     parsed[cmd.pid] = r
                     data[cmd.pid] = when (r) { is ParseResult.Success -> r.value; else -> "" }
                 }
@@ -274,6 +278,7 @@ class DriveLogger(private val connection: Elm327Connection) {
                 w.write("Max RPM;${s.maxRpm}\nMax Hiz;${s.maxSpeed}\nMax Hararet;${s.maxCoolant}\nEko;${s.ecoScore}/100\n")
                 w.write("Yakit Tipi;${if (logIsLpg) "LPG" else "Benzin"}\n")
                 w.write("OBD kopma;$obdDropCount\nOBD verisiz sure;${obdLostSec}sn\n")
+                if (firstBadRaw.isNotEmpty()) w.write("Okunamayan RPM cevabi;$firstBadRaw\n")
             }
         } catch (_: Exception) { return false }
         val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
