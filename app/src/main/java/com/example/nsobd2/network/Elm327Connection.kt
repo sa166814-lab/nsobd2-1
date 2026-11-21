@@ -11,8 +11,46 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 
+/** MainActivity doldurur; soketi WiFi agina baglamak ve teshis icin. */
+object ElmCtx { @Volatile var app: android.content.Context? = null }
+
 class Elm327Connection {
     var isConnected = false
+
+    // ---- TEŞHİS SAYAÇLARI (CSV özetine yazılır) ----
+    @Volatile var eofCount = 0          // ELM bağlantıyı kendi tarafından kapattı
+    @Volatile var errorCount = 0        // yazma/okuma hatası
+    @Volatile var noSocketCount = 0     // soket yokken komut istendi
+    @Volatile var lastError = ""
+    @Volatile var lastRaw = ""
+    fun resetDiag() { eofCount = 0; errorCount = 0; noSocketCount = 0; lastError = "" }
+
+    /** Telefonun o anki ağ durumu (teşhis için). */
+    fun agDurumu(): String {
+        val ctx = ElmCtx.app ?: return "?"
+        return try {
+            val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val aktif = cm.getNetworkCapabilities(cm.activeNetwork)
+            val varsayilan = when {
+                aktif == null -> "yok"
+                aktif.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "WiFi"
+                aktif.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "MOBIL VERI"
+                else -> "diger"
+            }
+            "varsayilan ag=$varsayilan, wifi bagli=${wifiAgi() != null}"
+        } catch (e: Exception) { "?" }
+    }
+
+    private fun wifiAgi(): android.net.Network? {
+        val ctx = ElmCtx.app ?: return null
+        return try {
+            val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            @Suppress("DEPRECATION")
+            cm.allNetworks.firstOrNull {
+                cm.getNetworkCapabilities(it)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+            }
+        } catch (_: Exception) { null }
+    }
     private var socket: Socket? = null
     private var inStream: InputStream? = null
     private var outStream: OutputStream? = null
@@ -29,6 +67,8 @@ class Elm327Connection {
                 while (!connected && attempts < 3) {
                     try {
                         socket = Socket()
+                        // ELM WiFi'sinde internet yok; Android trafiği mobil veriye kaydırabiliyor. Soketi WiFi'ye bağla.
+                        wifiAgi()?.let { net -> try { net.bindSocket(socket) } catch (_: Exception) {} }
                         socket?.tcpNoDelay = true
                         socket?.keepAlive = true
                         socket?.receiveBufferSize = 8192
@@ -99,7 +139,7 @@ class Elm327Connection {
         cmdMutex.withLock { sendCommandInternal(cmd, timeoutMs) }
 
     private suspend fun sendCommandInternal(cmd: String, timeoutMs: Long = 3000): String {
-        if (socket == null || socket?.isConnected != true || socket?.isClosed == true) return ""
+        if (socket == null || socket?.isConnected != true || socket?.isClosed == true) { noSocketCount++; return "" }
         return withContext(Dispatchers.IO) {
             try {
                 outStream?.write(("$cmd\r").toByteArray()); outStream?.flush()
@@ -110,14 +150,15 @@ class Elm327Connection {
                     while (true) {
                         if (System.currentTimeMillis() - startTime > timeoutMs) break
                         val bytesRead = inStream?.read(buffer) ?: break
-                        if (bytesRead < 0) break
+                        if (bytesRead < 0) { eofCount++; break }
                         val chunk = String(buffer, 0, bytesRead)
                         response.append(chunk)
                         if (chunk.contains(">")) break
                     }
                 } catch (_: SocketTimeoutException) {}
                 response.toString().replace(">", "").replace("SEARCHING...", "").replace("\r", "").replace("\n", "").trim()
-            } catch (_: Exception) { "" }
+                    .also { lastRaw = it }
+            } catch (e: Exception) { errorCount++; lastError = "${e.javaClass.simpleName}: ${e.message}"; "" }
         }
     }
 

@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 1001)
         }
 
+        com.example.nsobd2.network.ElmCtx.app = applicationContext
         viewModel.gpsTracker = GpsTracker(applicationContext)
         viewModel.initFromPrefs(this)
 

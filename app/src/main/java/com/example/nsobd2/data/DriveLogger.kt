@@ -55,6 +55,10 @@ class DriveLogger(private val connection: Elm327Connection) {
 
     var gpsTotalKm: Double = 0.0
 
+    // ---- TEŞHİS ----
+    private var diagIlkRpm = ""; private var diagIlkBozukRpm = ""; private var diagIlkBozukZaman = 0L
+    private var diagSonIyiZaman = 0L; private var diagIyiSatir = 0; private var diagAgBasta = ""; private var diagAgBozuk = ""
+
     // MOTOR HACMİ — ViewModel, kayıt başlarken AppPrefs'ten doldurur.
     // Varsayılan 1.4 L. Eskiden formüle 1.1 L gömülüydü.
     var engineM3: Double = 0.0014
@@ -79,6 +83,8 @@ class DriveLogger(private val connection: Elm327Connection) {
         _maxCoolant.value = 0; _totalKm.value = 0.0; _totalLiters.value = 0.0; _maxHp.value = 0.0
         gpsTotalKm = 0.0; logIsLpg = isLpg
         startTimeMs = System.currentTimeMillis(); _isLogging.value = true
+        diagIlkRpm = ""; diagIlkBozukRpm = ""; diagIlkBozukZaman = 0L; diagSonIyiZaman = 0L; diagIyiSatir = 0
+        connection.resetDiag(); diagAgBasta = connection.agDurumu(); diagAgBozuk = ""
 
         loggingJob = scope.launch(Dispatchers.IO) {
             var lastSampleMs = System.currentTimeMillis()
@@ -93,6 +99,15 @@ class DriveLogger(private val connection: Elm327Connection) {
                     if (!isActive) break
                     val raw = connection.sendCommand(cmd.pid)
                     val r = cmd.parse(raw)
+                    if (cmd.pid == "010C") {
+                        val rr = raw.ifEmpty { "(bos)" }.replace(";", ",").take(60)
+                        if (diagIlkRpm.isEmpty()) diagIlkRpm = rr
+                        if (r is ParseResult.Success) diagSonIyiZaman = System.currentTimeMillis()
+                        else if (diagIlkBozukZaman == 0L) {
+                            diagIlkBozukZaman = System.currentTimeMillis(); diagIlkBozukRpm = rr
+                            diagAgBozuk = connection.agDurumu()
+                        }
+                    }
                     parsed[cmd.pid] = r
                     data[cmd.pid] = when (r) { is ParseResult.Success -> r.value; else -> "" }
                 }
@@ -119,6 +134,7 @@ class DriveLogger(private val connection: Elm327Connection) {
                     data["0107"].orEmpty(), data["0114"].orEmpty()
                 )
                 _entries.add(entry); _logCount.value = _entries.size
+                if (entry.rpm.isNotEmpty()) diagIyiSatir++
 
                 entry.rpm.toIntOrNull()?.let { if (it > _maxRpm.value) _maxRpm.value = it }
                 entry.speed.toIntOrNull()?.let { if (it > _maxSpeed.value) _maxSpeed.value = it }
@@ -230,6 +246,19 @@ class DriveLogger(private val connection: Elm327Connection) {
                 w.write("Maliyet;${"%.2f".format(Locale.US, s.cost)} TL\nMax BG;${"%.1f".format(Locale.US, s.maxHorsepower)}\n")
                 w.write("Max RPM;${s.maxRpm}\nMax Hiz;${s.maxSpeed}\nMax Hararet;${s.maxCoolant}\nEko;${s.ecoScore}/100\n")
                 w.write("Yakit Tipi;${if (logIsLpg) "LPG" else "Benzin"}\n")
+                // ---- TEŞHİS (sorun olursa bu satırları gönder) ----
+                val hm = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                w.write("\n=== TESHIS ===\n")
+                w.write("RPM dolu satir;$diagIyiSatir / ${_entries.size}\n")
+                w.write("Ilk RPM cevabi;$diagIlkRpm\n")
+                w.write("Son saglam RPM;${if (diagSonIyiZaman > 0) hm.format(Date(diagSonIyiZaman)) else "hic"}\n")
+                w.write("Ilk bozuk RPM;${if (diagIlkBozukZaman > 0) hm.format(Date(diagIlkBozukZaman)) + " -> " + diagIlkBozukRpm else "yok"}\n")
+                w.write("ELM baglantiyi kapatti (EOF);${connection.eofCount}\n")
+                w.write("Yazma/okuma hatasi;${connection.errorCount}\n")
+                w.write("Soketsiz komut;${connection.noSocketCount}\n")
+                w.write("Son hata;${connection.lastError.replace(";", ",")}\n")
+                w.write("Ag (baslangic);$diagAgBasta\n")
+                w.write("Ag (bozulunca);$diagAgBozuk\n")
             }
         } catch (_: Exception) { return false }
         val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
