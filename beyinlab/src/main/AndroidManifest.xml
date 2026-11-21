@@ -15,7 +15,7 @@
         android:usesCleartextTraffic="true">
 
         <activity
-            android:name=".ui.ecu.EcuLabActivity"
+            android:name="com.example.nsobd2.ui.ecu.EcuLabActivity"
             android:label="NS Beyin Lab"
             android:exported="true">
             <intent-filter>

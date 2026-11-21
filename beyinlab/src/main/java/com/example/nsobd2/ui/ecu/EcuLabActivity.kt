@@ -72,7 +72,7 @@ class EcuLabActivity : AppCompatActivity() {
         root.addView(tvStatus)
 
         root.addView(TextView(this).apply {
-            text = "ℹ️ Teşhis için motor sıcak ve RÖLANTİDE olmalı. Çıkınca Bağlantı sekmesinden tekrar bağlan."
+            text = "ℹ️ Teşhis için motor sıcak ve RÖLANTİDE olmalı. İşin bitince geri tuşuyla çık, sonra NS OBD2 uygulamasını aç."
             setTextColor(Color.parseColor("#F0A030"))
             textSize = 12f
             setPadding(0, 0, 0, dp(10))
