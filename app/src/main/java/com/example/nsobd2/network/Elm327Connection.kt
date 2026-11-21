@@ -29,10 +29,25 @@ class Elm327Connection {
     private var inStream: InputStream? = null
     private var outStream: OutputStream? = null
     private val cmdMutex = Mutex()
+    private val connectMutex = Mutex()   // iki ekran ayni anda baglanmaya calisirsa birbirini bozmasin
     private var lastIp: String = "192.168.0.10"
     private var lastPort: Int = 35000
 
-    suspend fun connect(ip: String = "192.168.0.10", port: Int = 35000, updateStatus: suspend (String) -> Unit): String {
+    suspend fun connect(ip: String = "192.168.0.10", port: Int = 35000, updateStatus: suspend (String) -> Unit): String =
+        connectMutex.withLock { connectInternal(ip, port, updateStatus) }
+
+    /**
+     * Soketi kapatmadan ELM ayarlarini fabrika durumuna dondurur (ATD) ve normal ayarlari kurar.
+     * Beyin Lab testleri header/adres/baud degistirdikten sonra kullanilir.
+     */
+    suspend fun restoreDefaults() = cmdMutex.withLock {
+        if (!isConnected) return@withLock
+        sendCommandInternal("ATPC"); sendCommandInternal("ATD"); delay(300)
+        for (c in listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATST64", "ATSP5")) sendCommandInternal(c)
+        sendCommandInternal("0100")
+    }
+
+    private suspend fun connectInternal(ip: String, port: Int, updateStatus: suspend (String) -> Unit): String {
         return withContext(Dispatchers.IO) {
             try {
                 lastIp = ip; lastPort = port; manualDisconnect = false

@@ -40,6 +40,8 @@ class EcuLabActivity : AppCompatActivity() {
 
     // Ana uygulamayla AYNI baglanti — ikinci soket ELM'yi kilitliyordu
     private val conn = com.example.nsobd2.network.ElmShared.connection
+    private var labOturum = 0
+    companion object { @Volatile private var labOturumSayaci = 0 }
 
     private lateinit var tvStatus: TextView
     private lateinit var tvLog: TextView
@@ -158,6 +160,7 @@ class EcuLabActivity : AppCompatActivity() {
         log("🧠 BEYİN LAB hazır.")
         log("${AppPrefs.aracEtiketi(this)} • ISO 14230-4 KWP FAST")
         log("──────────────────────────────")
+        labOturumSayaci++; labOturum = labOturumSayaci
         com.example.nsobd2.network.ElmShared.labActive = true
         doConnect()
     }
@@ -166,9 +169,11 @@ class EcuLabActivity : AppCompatActivity() {
         super.onDestroy()
         // lifecycleScope burada iptal edilmis olur (eskiden kapatma hic calismiyordu).
         // Testler ELM ayarlarini (header, adres, baud) degistirmis olabilir: temiz ayarla yeniden kur.
+        val benim = labOturum
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-            try { if (conn.isConnected) conn.reconnect() } catch (_: Exception) {}
-            com.example.nsobd2.network.ElmShared.labActive = false
+            try { conn.restoreDefaults() } catch (_: Exception) {}
+            // Bu arada yeni bir Lab acildiysa onun bayragini silme
+            if (benim == labOturumSayaci) com.example.nsobd2.network.ElmShared.labActive = false
         }
     }
 
@@ -321,21 +326,32 @@ class EcuLabActivity : AppCompatActivity() {
         busy = true
         status("🟡 Bağlanılıyor...")
         lifecycleScope.launch {
-            val ip = etIp.text.toString().trim().ifEmpty { "192.168.0.10" }
-            val port = etPort.text.toString().trim().toIntOrNull() ?: 35000
-            // Ana ekran zaten bagliysa ve ELM cevap veriyorsa yeniden baglanma
-            val zatenBagli = conn.isConnected && conn.sendCommand("ATRV").uppercase().contains("V")
-            val res = if (zatenBagli) "Ana bağlantı kullanılıyor" else withContext(Dispatchers.IO) {
-                conn.connect(ip, port) { s -> status("🟡 $s") }
+            try {
+                val ip = etIp.text.toString().trim().ifEmpty { "192.168.0.10" }
+                val port = etPort.text.toString().trim().toIntOrNull() ?: 35000
+                // Ana ekran zaten bagliysa ve ELM cevap veriyorsa yeniden baglanma
+                val zatenBagli = conn.isConnected && conn.sendCommand("ATRV").uppercase().contains("V")
+                val res = if (zatenBagli) "Ana bağlantı kullanılıyor" else {
+                    log("── $ip:$port bağlanılıyor...")
+                    kotlinx.coroutines.withTimeoutOrNull(40_000) {
+                        withContext(Dispatchers.IO) {
+                            conn.connect(ip, port) { s -> status("🟡 $s"); log("   $s") }
+                        }
+                    } ?: "HATA: 40 sn içinde bağlanamadı (ELM'yi çıkar-tak, Wi-Fi'yi kontrol et)"
+                }
+                log("── $res")
+                status(if (conn.isConnected) "🟢 Bağlı" else "🔴 $res")
+                if (conn.isConnected) {
+                    ask("ATI", "ELM sürümü")
+                    ask("ATDP", "aktif protokol")
+                    ask("ATRV", "akü gerilimi")
+                }
+            } catch (e: Exception) {
+                log("── HATA: ${e.message}")
+                status("🔴 Bağlantı hatası — BAĞLAN'a tekrar bas")
+            } finally {
+                busy = false   // eskiden hata olursa busy true kalip BAGLAN butonu olu kaliyordu
             }
-            log("── $res")
-            status(if (conn.isConnected) "🟢 Bağlı" else "🔴 $res")
-            if (conn.isConnected) {
-                ask("ATI", "ELM sürümü")
-                ask("ATDP", "aktif protokol")
-                ask("ATRV", "akü gerilimi")
-            }
-            busy = false
         }
     }
 
