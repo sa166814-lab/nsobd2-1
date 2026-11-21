@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
 import com.example.nsobd2.network.Elm327Connection
-import com.example.nsobd2.network.ElmShared
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,14 +53,6 @@ class DriveLogger(private val connection: Elm327Connection) {
     val totalLiters = _totalLiters.asStateFlow()
     private val _maxHp = MutableStateFlow(0.0)
 
-    // OBD BAGLANTI DURUMU — null = veri geliyor; dolu = ekranda gosterilecek uyari
-    private val _obdStatus = MutableStateFlow<String?>(null)
-    val obdStatus = _obdStatus.asStateFlow()
-    var obdDropCount: Int = 0; private set
-    var obdLostSec: Long = 0L; private set
-    // Teshis: okunamayan ilk RPM cevabi (ham) — CSV ozetine yazilir
-    var firstBadRaw: String = ""; private set
-
     var gpsTotalKm: Double = 0.0
 
     // MOTOR HACMİ — ViewModel, kayıt başlarken AppPrefs'ten doldurur.
@@ -69,11 +60,6 @@ class DriveLogger(private val connection: Elm327Connection) {
     var engineM3: Double = 0.0014
     var volEff: Double = 0.85
     private var logIsLpg: Boolean = false
-
-    /** ViewModel'in canlı sorgusu: (son taze okuma zamanı ms, son değerler). */
-    @Volatile var sampleSource: (() -> Pair<Long, Map<String, ParseResult>>)? = null
-    /** Teşhis: son okunamayan ham RPM cevabı. */
-    @Volatile var lastBadRaw: (() -> String)? = null
 
     private val _liveData = MutableStateFlow<Map<String, ParseResult>>(emptyMap())
     val liveData = _liveData.asStateFlow()
@@ -89,61 +75,39 @@ class DriveLogger(private val connection: Elm327Connection) {
         _entries.clear(); _logCount.value = 0; _maxRpm.value = 0; _maxSpeed.value = 0
         _maxCoolant.value = 0; _totalKm.value = 0.0; _totalLiters.value = 0.0; _maxHp.value = 0.0
         gpsTotalKm = 0.0; logIsLpg = isLpg
-        _obdStatus.value = null; obdDropCount = 0; obdLostSec = 0L; firstBadRaw = ""
         startTimeMs = System.currentTimeMillis(); _isLogging.value = true
 
         loggingJob = scope.launch(Dispatchers.IO) {
             var lastSampleMs = System.currentTimeMillis()
             var lastSpeedKmh = 0.0
 
-            var emptyStreak = 0
-            var lostSinceMs = 0L
-
-            // YENİ YAPI: Kayıt ELM'ye AYRICA komut göndermiyor. Paneldeki canlı sorgu ne okuyorsa
-            // (sampleSource) onu 3 sn'de bir kaydediyor. Böylece kayıt açıkken ekran donmuyor ve
-            // CSV'deki değerler ekranda gördüğünle aynı oluyor.
-            while (isActive) {
+            while (isActive && connection.isConnected) {
                 val tick = System.currentTimeMillis()
+                val data = HashMap<String, String>()
+                val parsed = HashMap<String, ParseResult>()
 
-                if (connection.manualDisconnect) break           // kullanici baglantiyi kesti
-                if (ElmShared.labActive) { delay(1000); continue } // Beyin Lab ELM'yi kullaniyor
-
-                val src = sampleSource
-                val (sampleMs, snap) = src?.invoke() ?: (0L to emptyMap())
-                val fresh = sampleMs > 0 && tick - sampleMs < 6000
-
-                if (!fresh) {
-                    if (lostSinceMs == 0L) { lostSinceMs = tick; obdDropCount++ }
-                    emptyStreak++
-                    // 3 tur (≈9 sn) hiç taze veri yoksa yeniden bağlan
-                    if (!connection.isConnected || emptyStreak >= 3) {
-                        _obdStatus.value = "⚠️ OBD veri gelmiyor — yeniden bağlanılıyor..."
-                        val ok = try { connection.reconnect() } catch (_: Exception) { false }
-                        _obdStatus.value = if (ok) "🟢 OBD yeniden bağlandı" else "🔴 OBD bağlantısı yok — tekrar denenecek (GPS kaydı sürüyor)"
-                        emptyStreak = 0
-                    } else {
-                        _obdStatus.value = "⚠️ OBD veri gelmiyor..."
-                    }
-                    if (firstBadRaw.isEmpty()) firstBadRaw = lastBadRaw?.invoke().orEmpty().replace(";", ",").take(80)
-                    val elapsedE = System.currentTimeMillis() - tick
-                    delay((intervalMs - elapsedE).coerceAtLeast(0L))
-                    continue
+                for (cmd in commands) {
+                    if (!isActive) break
+                    val raw = connection.sendCommand(cmd.pid)
+                    val r = cmd.parse(raw)
+                    parsed[cmd.pid] = r
+                    data[cmd.pid] = when (r) { is ParseResult.Success -> r.value; else -> "" }
                 }
-                if (lostSinceMs > 0L) {
-                    obdLostSec += (System.currentTimeMillis() - lostSinceMs) / 1000
-                    lostSinceMs = 0L
-                    // Kopma süresince mesafe/yakıt sıçramasın
-                    lastSampleMs = System.currentTimeMillis(); lastSpeedKmh = 0.0
-                }
-                emptyStreak = 0
-                if (_obdStatus.value != null) _obdStatus.value = null
 
-                fun v(k: String) = (snap[k] as? ParseResult.Success)?.value.orEmpty()
-                val data = mapOf(
-                    "010C" to v("RPM"), "010D" to v("SPEED"), "0105" to v("TEMP"), "0104" to v("LOAD"),
-                    "010B" to v("MAP"), "010F" to v("IAT"), "0111" to v("TPS"), "010E" to v("AVANS"),
-                    "0106" to v("STFT"), "0107" to v("LTFT"), "0114" to v("O2")
-                )
+                // CANLI VERİ YAYINI → ViewModel._uiState'e yazar (init bloğundan)
+                val live = HashMap<String, ParseResult>()
+                parsed["010C"]?.let { live["RPM"] = it }
+                parsed["010D"]?.let { live["SPEED"] = it }
+                parsed["0105"]?.let { live["TEMP"] = it }
+                parsed["0104"]?.let { live["LOAD"] = it }
+                parsed["010B"]?.let { live["MAP"] = it }
+                parsed["010F"]?.let { live["IAT"] = it }
+                parsed["0111"]?.let { live["TPS"] = it }
+                parsed["010E"]?.let { live["AVANS"] = it }
+                parsed["0106"]?.let { live["STFT"] = it }
+                parsed["0107"]?.let { live["LTFT"] = it }
+                parsed["0114"]?.let { live["O2"] = it }
+                _liveData.value = live
 
                 val entry = DriveLogEntry(
                     tick, data["010C"].orEmpty(), data["010D"].orEmpty(), data["0105"].orEmpty(),
@@ -194,13 +158,11 @@ class DriveLogger(private val connection: Elm327Connection) {
                 val elapsed = System.currentTimeMillis() - tick
                 delay((intervalMs - elapsed).coerceAtLeast(0L))
             }
-            if (lostSinceMs > 0L) obdLostSec += (System.currentTimeMillis() - lostSinceMs) / 1000
-            _obdStatus.value = null
             _isLogging.value = false
         }
     }
 
-    fun stopLogging() { _isLogging.value = false; _obdStatus.value = null; loggingJob?.cancel(); loggingJob = null }
+    fun stopLogging() { _isLogging.value = false; loggingJob?.cancel(); loggingJob = null }
 
     fun applyFuelConsumptionToTank(ctx: Context) {
         if (_totalLiters.value > 0.01) FuelTankStore.consume(ctx, _totalLiters.value)
@@ -267,8 +229,6 @@ class DriveLogger(private val connection: Elm327Connection) {
                 w.write("Maliyet;${"%.2f".format(Locale.US, s.cost)} TL\nMax BG;${"%.1f".format(Locale.US, s.maxHorsepower)}\n")
                 w.write("Max RPM;${s.maxRpm}\nMax Hiz;${s.maxSpeed}\nMax Hararet;${s.maxCoolant}\nEko;${s.ecoScore}/100\n")
                 w.write("Yakit Tipi;${if (logIsLpg) "LPG" else "Benzin"}\n")
-                w.write("OBD kopma;$obdDropCount\nOBD verisiz sure;${obdLostSec}sn\n")
-                if (firstBadRaw.isNotEmpty()) w.write("Okunamayan RPM cevabi;$firstBadRaw\n")
             }
         } catch (_: Exception) { return false }
         val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)

@@ -7,7 +7,6 @@ import com.example.nsobd2.data.AppPrefs
 import com.example.nsobd2.data.BatteryHealthStore
 import com.example.nsobd2.data.DriveHistoryStore
 import com.example.nsobd2.data.DriveLogger
-import com.example.nsobd2.network.ElmShared
 import com.example.nsobd2.data.DriveSummary
 import com.example.nsobd2.data.DtcHistoryStore
 import com.example.nsobd2.data.GpsTracker
@@ -30,7 +29,7 @@ enum class AppScreen { CONNECTION, DASHBOARD, DIAGNOSTICS, INSPECTION, TESTS }
 
 class VehicleViewModel : ViewModel() {
 
-    val connection = ElmShared.connection
+    val connection = Elm327Connection()
     private val repository = ObdRepository(connection)
     val driveLogger = DriveLogger(connection)
     var gpsTracker: GpsTracker? = null
@@ -125,23 +124,12 @@ class VehicleViewModel : ViewModel() {
         }
     }
 
-    /** "Bağlantıyı Kes" butonu: kaydı bitirir, soketi kapatır, durumu günceller. */
+    /** "Bağlantıyı Kes" butonu: kaydı bitirir, soketi kapatır, durum yazısını günceller. */
     fun disconnectFromVehicle(ctx: Context) {
         viewModelScope.launch {
             if (driveLogger.isLogging.value) toggleDriveLog(ctx)
-            crankingMonitorActive = false
-            connection.disconnectByUser()
+            connection.disconnect()
             _connectionStatus.value = "Bağlantı kesildi"
-        }
-    }
-
-    /** Beyin Lab'dan dönünce: Lab bağlantıyı açık bıraktıysa ana ekran sorgusunu yeniden başlat. */
-    fun onReturnFromLab() {
-        if (connection.isConnected) {
-            if (!_connectionStatus.value.contains("Başarılı")) _connectionStatus.value = "Bağlantı Başarılı! (Beyin Lab sonrası)"
-            startPolling()
-        } else if (!connection.manualDisconnect && _connectionStatus.value.contains("Başarılı")) {
-            _connectionStatus.value = "Bağlantı koptu — tekrar bağlan"
         }
     }
 
@@ -163,38 +151,19 @@ class VehicleViewModel : ViewModel() {
         }
     }
 
-    private var pollingJob: kotlinx.coroutines.Job? = null
-    @Volatile private var latestSample: Map<String, ParseResult> = emptyMap()
-    @Volatile private var latestSampleMs: Long = 0L
-    @Volatile private var lastBadRpmRaw: String = ""
-    private fun lastRawOf(@Suppress("UNUSED_PARAMETER") pid: String): String = connection.lastRaw
-
-    init {
-        driveLogger.sampleSource = { latestSampleMs to latestSample }
-        driveLogger.lastBadRaw = { lastBadRpmRaw }
-    }
-
     private fun startPolling() {
-        if (pollingJob?.isActive == true) return   // ikinci döngü açılmasın
-        pollingJob = viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             var loopCounter = 0
             val dataCache = mutableMapOf<String, ParseResult>()
-            // Kayıt sürerken bağlantı koparsa logger yeniden bağlar; polling döngüsü ölmesin
-            while (isActive && (connection.isConnected || driveLogger.isLogging.value || ElmShared.labActive)) {
+            while (isActive && connection.isConnected) {
                 try {
-                    // Beyin Lab açıkken ELM onun — araya komut sokma
-                    if (ElmShared.labActive || !connection.isConnected) { delay(500); continue }
-                    // Kayıt açıkken hangi sekmede olursan ol panel verisi okunmaya devam eder;
-                    // kayıt bu verileri alıp yazar (ELM'ye ikinci kez sorulmaz → ekran donmaz)
-                    val ekran = if (driveLogger.isLogging.value) AppScreen.DASHBOARD else _currentScreen.value
-                    when (ekran) {
+                    // Logger çalışıyorsa polling DUR — logger zaten veriyi üretiyor ve _uiState'e yazıyor
+                    if (driveLogger.isLogging.value) { delay(500); continue }
+
+                    when (_currentScreen.value) {
                         AppScreen.DASHBOARD -> {
-                            val rpmR = repository.getRpm()
-                            if (rpmR !is ParseResult.Success) lastBadRpmRaw = lastRawOf("010C")
-                            dataMapSafePut(dataCache, "RPM", rpmR)
-                            val spdR = repository.getSpeed()
-                            dataMapSafePut(dataCache, "SPEED", spdR)
-                            if (rpmR is ParseResult.Success || spdR is ParseResult.Success) latestSampleMs = System.currentTimeMillis()
+                            dataMapSafePut(dataCache, "RPM", repository.getRpm())
+                            dataMapSafePut(dataCache, "SPEED", repository.getSpeed())
                             when (loopCounter % 6) {
                                 0 -> { dataMapSafePut(dataCache, "TEMP", repository.getCoolantTemp()); dataMapSafePut(dataCache, "LOAD", repository.getEngineLoad()) }
                                 1 -> { dataMapSafePut(dataCache, "MAP", repository.getMap()); dataMapSafePut(dataCache, "IAT", repository.getIat()) }
@@ -205,7 +174,6 @@ class VehicleViewModel : ViewModel() {
                             }
                             calculateInstantFuel(dataCache)
                             _uiState.value = HashMap(dataCache)
-                            latestSample = HashMap(dataCache)
 
                             // O2 örneğini biriktir (salınım kontrolü için)
                             (dataCache["O2"] as? ParseResult.Success)?.numericValue?.let { o2v ->

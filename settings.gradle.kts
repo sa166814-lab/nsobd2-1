@@ -23,3 +23,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "NS OBD2"
 include(":app")
+include(":beyinlab")

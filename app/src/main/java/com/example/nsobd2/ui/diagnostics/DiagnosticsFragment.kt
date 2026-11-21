@@ -17,7 +17,6 @@ import com.example.nsobd2.R
 import com.example.nsobd2.data.DtcHistoryStore
 import com.example.nsobd2.data.DtcParser
 import com.example.nsobd2.data.ReportStore
-import com.example.nsobd2.ui.ecu.EcuLabActivity
 import com.example.nsobd2.viewmodel.AppScreen
 import com.example.nsobd2.viewmodel.VehicleViewModel
 import kotlinx.coroutines.delay
@@ -43,7 +42,6 @@ class DiagnosticsFragment : Fragment(R.layout.fragment_diagnostics) {
     override fun onResume() {
         super.onResume()
         viewModel.setActiveScreen(AppScreen.DIAGNOSTICS)
-        viewModel.onReturnFromLab()
         refreshHistory()
         showSavedVin()
     }
@@ -66,7 +64,6 @@ class DiagnosticsFragment : Fragment(R.layout.fragment_diagnostics) {
         view.findViewById<Button>(R.id.btnShareHistory).setOnClickListener { shareHistory() }
         view.findViewById<Button>(R.id.btnClearHistory).setOnClickListener { confirmClearHistory() }
         view.findViewById<Button>(R.id.btnReports).setOnClickListener { showReports() }
-        view.findViewById<Button>(R.id.btnEcuLab).setOnClickListener { openEcuLab() }
 
         refreshHistory()
         showSavedVin()
@@ -394,19 +391,4 @@ class DiagnosticsFragment : Fragment(R.layout.fragment_diagnostics) {
 
     // ---------------------------------------------------------- BEYİN LAB
 
-    private fun openEcuLab() {
-        AlertDialog.Builder(requireContext())
-            .setTitle("🧠 Beyin Lab")
-            .setMessage(
-                "Beyin Lab derin tarama yapar (Mod 05 / 06 / 02, PID taraması).\n\n" +
-                        "Ana bağlantıyı kullanır; bağlı değilsen kendisi bağlanır. " +
-                        "Lab açıkken ana ekran verisi durur, çıkınca kendiliğinden devam eder.\n\n" +
-                        "Motor sıcakken en iyi sonucu verir."
-            )
-            .setPositiveButton("Aç") { _, _ ->
-                startActivity(Intent(requireContext(), EcuLabActivity::class.java))
-            }
-            .setNegativeButton("Vazgeç", null)
-            .show()
-    }
 }

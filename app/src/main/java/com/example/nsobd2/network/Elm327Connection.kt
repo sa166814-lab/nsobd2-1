@@ -11,50 +11,16 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 
-/**
- * Uygulamanin TEK ELM baglantisi. WiFi ELM327 ayni anda tek istemci kabul eder;
- * eskiden Beyin Lab ikinci bir soket aciyordu ve ana baglantiyla cakisiyordu.
- */
-object ElmShared {
-    val connection = Elm327Connection()
-    /** MainActivity doldurur; soketi WiFi agina baglamak icin gerekli. */
-    @Volatile var appContext: android.content.Context? = null
-    /** Beyin Lab acikken ana ekran sorgulari ve surus kaydi ELM'ye dokunmaz. */
-    @Volatile var labActive = false
-}
-
 class Elm327Connection {
-    @Volatile var isConnected = false
-    /** Kullanici "Baglantiyi kes" dediyse otomatik yeniden baglanma yapilmaz. */
-    @Volatile var manualDisconnect = false
-    /** Son komutun ham cevabi (teshis icin). */
-    @Volatile var lastRaw: String = ""
+    var isConnected = false
     private var socket: Socket? = null
     private var inStream: InputStream? = null
     private var outStream: OutputStream? = null
     private val cmdMutex = Mutex()
-    private val connectMutex = Mutex()   // iki ekran ayni anda baglanmaya calisirsa birbirini bozmasin
-    private var lastIp: String = "192.168.0.10"
-    private var lastPort: Int = 35000
 
-    suspend fun connect(ip: String = "192.168.0.10", port: Int = 35000, updateStatus: suspend (String) -> Unit): String =
-        connectMutex.withLock { connectInternal(ip, port, updateStatus) }
-
-    /**
-     * Soketi kapatmadan ELM ayarlarini fabrika durumuna dondurur (ATD) ve normal ayarlari kurar.
-     * Beyin Lab testleri header/adres/baud degistirdikten sonra kullanilir.
-     */
-    suspend fun restoreDefaults() = cmdMutex.withLock {
-        if (!isConnected) return@withLock
-        sendCommandInternal("ATPC"); sendCommandInternal("ATD"); delay(300)
-        for (c in listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATST64", "ATSP5")) sendCommandInternal(c)
-        sendCommandInternal("0100")
-    }
-
-    private suspend fun connectInternal(ip: String, port: Int, updateStatus: suspend (String) -> Unit): String {
+    suspend fun connect(ip: String = "192.168.0.10", port: Int = 35000, updateStatus: suspend (String) -> Unit): String {
         return withContext(Dispatchers.IO) {
             try {
-                lastIp = ip; lastPort = port; manualDisconnect = false
                 try { socket?.close() } catch (_: Exception) {}
                 socket = null; inStream = null; outStream = null; isConnected = false
 
@@ -63,9 +29,6 @@ class Elm327Connection {
                 while (!connected && attempts < 3) {
                     try {
                         socket = Socket()
-                        // ELM'nin WiFi'sinde internet yok; Android bu durumda trafigi MOBIL VERIYE
-                        // yonlendirebiliyor ve 192.168.0.10'a hic ulasilamiyor. Soketi WiFi'ye bagla.
-                        wifiAgi()?.let { net -> try { net.bindSocket(socket) } catch (_: Exception) {} }
                         socket?.tcpNoDelay = true
                         socket?.keepAlive = true
                         socket?.receiveBufferSize = 8192
@@ -115,27 +78,9 @@ class Elm327Connection {
                 return@withContext "Bağlantı Başarılı! ($currentProtocol)"
             } catch (e: Exception) {
                 isConnected = false
-                val neden = when (e) {
-                    is java.net.SocketTimeoutException -> "zaman aşımı"
-                    is java.net.ConnectException -> "bağlantı reddedildi (ELM başka cihaza bağlı olabilir)"
-                    is java.net.NoRouteToHostException -> "ağa ulaşılamıyor"
-                    else -> e.javaClass.simpleName
-                }
-                val wifiVar = if (wifiAgi() == null) " • telefon WiFi'ye bağlı görünmüyor" else ""
-                return@withContext "HATA: Cihaza Ulaşılamadı ($neden)$wifiVar"
+                return@withContext "HATA: Cihaza Ulaşılamadı"
             }
         }
-    }
-
-    private fun wifiAgi(): android.net.Network? {
-        val ctx = ElmShared.appContext ?: return null
-        return try {
-            val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-            @Suppress("DEPRECATION")
-            cm.allNetworks.firstOrNull {
-                cm.getNetworkCapabilities(it)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
-            }
-        } catch (_: Exception) { null }
     }
 
     private fun shouldTryNext(r: String): Boolean {
@@ -165,27 +110,16 @@ class Elm327Connection {
                     while (true) {
                         if (System.currentTimeMillis() - startTime > timeoutMs) break
                         val bytesRead = inStream?.read(buffer) ?: break
-                        if (bytesRead < 0) { isConnected = false; break } // karsi taraf baglantiyi kapatti
+                        if (bytesRead < 0) break
                         val chunk = String(buffer, 0, bytesRead)
                         response.append(chunk)
                         if (chunk.contains(">")) break
                     }
                 } catch (_: SocketTimeoutException) {}
                 response.toString().replace(">", "").replace("SEARCHING...", "").replace("\r", "").replace("\n", "").trim()
-                    .also { lastRaw = it.ifEmpty { "(bos cevap)" } }
-            } catch (_: Exception) { isConnected = false; "" } // yazma/okuma hatasi = baglanti koptu
+            } catch (_: Exception) { "" }
         }
     }
-
-    /** Son kullanilan IP/port ile bastan baglanir (ATZ + protokol init). Surus kaydi kopunca kullanilir. */
-    suspend fun reconnect(): Boolean {
-        if (manualDisconnect) return false
-        connect(lastIp, lastPort) { }
-        return isConnected
-    }
-
-    /** Kullanici istegiyle kapatma: otomatik yeniden baglanmayi da durdurur. */
-    suspend fun disconnectByUser() { manualDisconnect = true; disconnect() }
 
     suspend fun disconnect() {
         withContext(Dispatchers.IO) {

@@ -32,12 +32,10 @@ class MainActivity : AppCompatActivity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 1001)
         }
 
-        com.example.nsobd2.network.ElmShared.appContext = applicationContext
         viewModel.gpsTracker = GpsTracker(applicationContext)
         viewModel.initFromPrefs(this)
 
         // SÜRÜŞ KAYDI AÇIKKEN EKRAN KAPANMASIN — kapanınca Android WiFi/GPS'i uyutuyor, kayıt kesiliyor.
-        // Activity seviyesinde: hangi sekmede olursan ol çalışır, kayıt bitince normale döner.
         lifecycleScope.launch {
             viewModel.driveLogger.isLogging.collect { logging ->
                 if (logging) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

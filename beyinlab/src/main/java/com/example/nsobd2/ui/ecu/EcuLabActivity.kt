@@ -38,10 +38,7 @@ import kotlin.math.sqrt
  */
 class EcuLabActivity : AppCompatActivity() {
 
-    // Ana uygulamayla AYNI baglanti — ikinci soket ELM'yi kilitliyordu
-    private val conn = com.example.nsobd2.network.ElmShared.connection
-    private var labOturum = 0
-    companion object { @Volatile private var labOturumSayaci = 0 }
+    private val conn = Elm327Connection()
 
     private lateinit var tvStatus: TextView
     private lateinit var tvLog: TextView
@@ -160,20 +157,16 @@ class EcuLabActivity : AppCompatActivity() {
         log("🧠 BEYİN LAB hazır.")
         log("${AppPrefs.aracEtiketi(this)} • ISO 14230-4 KWP FAST")
         log("──────────────────────────────")
-        labOturumSayaci++; labOturum = labOturumSayaci
-        com.example.nsobd2.network.ElmShared.labActive = true
         doConnect()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // lifecycleScope burada iptal edilmis olur (eskiden kapatma hic calismiyordu).
-        // Testler ELM ayarlarini (header, adres, baud) degistirmis olabilir: temiz ayarla yeniden kur.
-        val benim = labOturum
+        // lifecycleScope burada iptal edilmis olur; kapatmayi ayri kapsamda yap ki soket acik kalmasin
+        // (acik kalirsa NS OBD2 uygulamasi ELM'ye baglanamaz). Cikmadan once ELM'yi fabrika ayarina dondur.
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-            try { conn.restoreDefaults() } catch (_: Exception) {}
-            // Bu arada yeni bir Lab acildiysa onun bayragini silme
-            if (benim == labOturumSayaci) com.example.nsobd2.network.ElmShared.labActive = false
+            try { conn.sendCommand("ATPC"); conn.sendCommand("ATZ") } catch (_: Exception) {}
+            try { conn.disconnect() } catch (_: Exception) {}
         }
     }
 

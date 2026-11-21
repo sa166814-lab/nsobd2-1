@@ -84,14 +84,6 @@
                 android:backgroundTint="#F44336" />
         </LinearLayout>
 
-        <Button
-            android:id="@+id/btnEcuLab"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="🧠 BEYİN LAB — DERİN TARAMA"
-            android:backgroundTint="#673AB7"
-            android:layout_marginBottom="8dp" />
-
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

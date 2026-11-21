@@ -25,19 +25,20 @@ jobs:
       - name: APK derle
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew :app:assembleDebug :beyinlab:assembleDebug --no-daemon
 
       - name: APK'yi adlandir
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk nsobd2.apk
+          cp beyinlab/build/outputs/apk/debug/beyinlab-debug.apk nsbeyinlab.apk
 
       - name: Son surumu yayinla
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete son-surum -y --cleanup-tag || true
-          gh release create son-surum nsobd2.apk \
+          gh release create son-surum nsobd2.apk nsbeyinlab.apk \
             --target "${{ github.sha }}" \
             --title "NS OBD2 — son sürüm (v1.0.${{ github.run_number }})" \
-            --notes "Otomatik derleme. nsobd2.apk dosyasını indirip kur." \
+            --notes "Otomatik derleme. nsobd2.apk = ana uygulama, nsbeyinlab.apk = ayrı Beyin Lab uygulaması." \
             --latest
