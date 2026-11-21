@@ -54,6 +54,12 @@ object AppPrefs {
     fun setVolumetricEfficiency(ctx: Context, v: Double) =
         p(ctx).edit().putString("volumetric_eff", v.toString()).apply()
 
+    /** Yakıt kalibrasyon katsayısı (depo dolumundan öğrenilir). 1.0 = düzeltme yok. */
+    fun getFuelCalib(ctx: Context): Double =
+        p(ctx).getString("fuel_calib", "1.0")?.toDoubleOrNull() ?: 1.0
+    fun setFuelCalib(ctx: Context, v: Double) =
+        p(ctx).edit().putString("fuel_calib", v.toString()).apply()
+
     // --------------------------------------------------------- BAĞLANTI
 
     fun getSavedIp(ctx: Context): String =

@@ -145,11 +145,7 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
         }
 
         // DEPO BUTONLARI
-        view.findViewById<Button>(R.id.btnRefillFull).setOnClickListener {
-            FuelTankStore.refillFull(requireContext())
-            refreshTankUi()
-            Toast.makeText(requireContext(), "✅ Depo full işaretlendi", Toast.LENGTH_SHORT).show()
-        }
+        view.findViewById<Button>(R.id.btnRefillFull).setOnClickListener { showRefillFullDialog() }
         view.findViewById<Button>(R.id.btnAddFuel).setOnClickListener {
             showAddFuelDialog()
         }
@@ -315,6 +311,50 @@ class DashboardFragment : Fragment(R.layout.fragment_dashboard), TextToSpeech.On
             }
         }
         tvTankRange.text = "Tahmini menzil: yeterli sürüş verisi yok"
+    }
+
+    /**
+     * DEPO FULL + KALİBRASYON: Depoyu ağzına kadar doldurunca pompada yazan litreyi gir.
+     * Uygulama son full'den beri kendi tahminiyle karşılaştırıp yakıt hesabını düzeltir.
+     */
+    private fun showRefillFullDialog() {
+        val ctx = requireContext()
+        val est = FuelTankStore.getEstimatedSinceFull(ctx)
+        val edit = EditText(ctx).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "Pompada yazan litre (ör: 32.4)"
+        }
+        val calib = AppPrefs.getFuelCalib(ctx)
+        AlertDialog.Builder(ctx)
+            .setTitle("⛽ Depo Full")
+            .setMessage(
+                "Depoyu ağzına kadar doldurduysan pompada yazan litreyi gir. " +
+                "Uygulama kendi hesabını buna göre düzeltir.\n\n" +
+                "Son full'den beri uygulamanın tahmini: ${"%.1f".format(Locale.US, est)} L\n" +
+                "Şu anki düzeltme katsayısı: ${"%.2f".format(Locale.US, calib)}\n\n" +
+                "⚠️ Sadece iki full arasındaki TÜM sürüşleri kaydettiysen litre gir; kayıtsız sürüş varsa boş bırak.\n" +
+                "İlk kez kullanıyorsan boş bırakıp sadece Full işaretle; bir sonraki full'de girersin."
+            )
+            .setView(edit)
+            .setPositiveButton("Full işaretle") { _, _ ->
+                val litre = edit.text.toString().replace(",", ".").toDoubleOrNull()
+                val msg = if (litre != null) {
+                    val yeni = FuelTankStore.calibrateOnFull(ctx, litre)
+                    if (yeni != null) {
+                        viewModel.refreshEngineParams(ctx)
+                        "✅ Kalibre edildi. Yeni katsayı: ${"%.2f".format(Locale.US, yeni)}"
+                    } else "ℹ️ Kalibrasyon için son full'den beri en az 5 L kayıtlı sürüş gerekli. Full işaretlendi."
+                } else "✅ Depo full işaretlendi"
+                FuelTankStore.refillFull(ctx)
+                refreshTankUi()
+                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+            }
+            .setNeutralButton("Katsayıyı sıfırla") { _, _ ->
+                AppPrefs.setFuelCalib(ctx, 1.0); viewModel.refreshEngineParams(ctx)
+                Toast.makeText(ctx, "Katsayı 1.00'a döndü", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Vazgeç", null)
+            .show()
     }
 
     private fun showAddFuelDialog() {

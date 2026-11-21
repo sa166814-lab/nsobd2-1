@@ -59,6 +59,9 @@ class DriveLogger(private val connection: Elm327Connection) {
     // Varsayılan 1.4 L. Eskiden formüle 1.1 L gömülüydü.
     var engineM3: Double = 0.0014
     var volEff: Double = 0.85
+    var fuelCalib: Double = 1.0
+    /** Araç + sürücü kütlesi (kg), beygir tahmini için. 206 boş ~1000 kg + sürücü. */
+    var massKg: Double = 1075.0
     private var logIsLpg: Boolean = false
 
     private val _liveData = MutableStateFlow<Map<String, ParseResult>>(emptyMap())
@@ -129,27 +132,25 @@ class DriveLogger(private val connection: Elm327Connection) {
                 val deltaKm = (avgSpeedKmh / 3600.0) * deltaSec
                 _totalKm.value = _totalKm.value + deltaKm
 
-                // YAKIT
+                // YAKIT — FuelModel: yakıt düzeltmeleri (STFT/LTFT), motor freni kesmesi, kalibrasyon
                 val rpmV = entry.rpm.toDoubleOrNull() ?: 0.0
                 val mapKpa = entry.map.toDoubleOrNull() ?: 0.0
-                val iatC = entry.iat.toDoubleOrNull() ?: 25.0
-                if (rpmV > 0 && mapKpa > 0) {
-                    val afr = if (logIsLpg) 15.5 else 14.7
-                    val fuelDensity = if (logIsLpg) 0.55 else 0.74
-                    val iatK = iatC + 273.15
-                    val mafKgS = (mapKpa * 1000.0 * engineM3 * volEff * (rpmV / 120.0) * 0.02897) / (8.314 * iatK)
-                    val fuelLh = (mafKgS / afr / fuelDensity) * 3600.0
-                    val deltaLiters = fuelLh * (deltaSec / 3600.0)
-                    _totalLiters.value = _totalLiters.value + deltaLiters
-                }
+                FuelModel.litersPerHour(
+                    rpmV, mapKpa, entry.iat.toDoubleOrNull(), speedKmh,
+                    entry.stft.toDoubleOrNull(), entry.ltft.toDoubleOrNull(),
+                    logIsLpg, engineM3, volEff, fuelCalib
+                )?.let { fuelLh -> _totalLiters.value = _totalLiters.value + fuelLh * (deltaSec / 3600.0) }
 
                 // BEYGİR
                 val speedMs = speedKmh / 3.6
                 if (deltaSec > 0.1 && speedMs > 1) {
                     val accel = (speedMs - lastSpeedKmh / 3.6) / deltaSec
                     if (accel > 0.5) {
-                        val pw = (0.5 * 1.225 * 0.65 * speedMs * speedMs + 0.013 * 950.0 * 9.81 + 950.0 * accel) * speedMs
-                        val hp = pw / 745.7
+                        // Ortalama hızla hesapla (3 sn'lik aralıkta son hız fazla gösteriyordu),
+                        // tekerden motora: şanzıman/aktarma kaybı ~%15
+                        val vOrt = (speedMs + lastSpeedKmh / 3.6) / 2.0
+                        val pw = (0.5 * 1.225 * 0.63 * vOrt * vOrt + 0.013 * massKg * 9.81 + massKg * accel) * vOrt
+                        val hp = pw / 745.7 / 0.85
                         if (hp in 1.0..200.0 && hp > _maxHp.value) _maxHp.value = hp
                     }
                 }

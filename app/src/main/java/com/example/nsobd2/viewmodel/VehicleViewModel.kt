@@ -88,6 +88,7 @@ class VehicleViewModel : ViewModel() {
     // tüketim ve maliyet hesapları ~%27 DÜŞÜK gösteriyordu.
     private var engineM3: Double = 0.0014
     private var volEff: Double = 0.85
+    private var fuelCalib: Double = 1.0
 
     private var crankingMonitorActive = false
     private var lowestCrankingVoltage = 99.0
@@ -98,12 +99,14 @@ class VehicleViewModel : ViewModel() {
         _isLpg.value = AppPrefs.isLpgMode(ctx)
         engineM3 = AppPrefs.getEngineM3(ctx)
         volEff = AppPrefs.getVolumetricEfficiency(ctx)
+        fuelCalib = AppPrefs.getFuelCalib(ctx)
     }
 
     /** Ayarlardan motor hacmi değiştirildiğinde çağrılır. */
     fun refreshEngineParams(ctx: Context) {
         engineM3 = AppPrefs.getEngineM3(ctx)
         volEff = AppPrefs.getVolumetricEfficiency(ctx)
+        fuelCalib = AppPrefs.getFuelCalib(ctx)
     }
 
     fun toggleLpg(ctx: Context) {
@@ -237,11 +240,11 @@ class VehicleViewModel : ViewModel() {
         val iat = (data["IAT"] as? ParseResult.Success)?.numericValue ?: (data["IAT"] as? ParseResult.Success)?.value?.toDoubleOrNull() ?: 25.0
         if (rpm <= 0 || mapKpa <= 0) return
 
-        val afr = if (_isLpg.value) 15.5 else 14.7
-        val fuelDensity = if (_isLpg.value) 0.55 else 0.74
-        val iatK = iat + 273.15
-        val mafKgS = (mapKpa * 1000.0 * engineM3 * volEff * (rpm / 120.0) * 0.02897) / (8.314 * iatK)
-        val fuelLh = (mafKgS / afr / fuelDensity) * 3600.0
+        val stft = (data["STFT"] as? ParseResult.Success)?.numericValue
+        val ltft = (data["LTFT"] as? ParseResult.Success)?.numericValue
+        val fuelLh = com.example.nsobd2.data.FuelModel.litersPerHour(
+            rpm, mapKpa, iat, speed, stft, ltft, _isLpg.value, engineM3, volEff, fuelCalib
+        ) ?: return
 
         if (speed > 5) {
             _instantFuel.value = String.format(Locale.US, "%.1f", fuelLh * 100.0 / speed)
@@ -284,6 +287,7 @@ class VehicleViewModel : ViewModel() {
         // Yakıt hesabı için motor parametrelerini loggera aktar
         driveLogger.engineM3 = AppPrefs.getEngineM3(ctx)
         driveLogger.volEff = AppPrefs.getVolumetricEfficiency(ctx)
+        driveLogger.fuelCalib = AppPrefs.getFuelCalib(ctx)
         driveLogger.startLogging(viewModelScope, isLpg = _isLpg.value)
         return true
     }
