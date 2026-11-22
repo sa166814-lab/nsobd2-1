@@ -218,7 +218,7 @@ class VehicleViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             val startMs = System.currentTimeMillis()
             while (crankingMonitorActive && System.currentTimeMillis() - startMs < 8000) {
-                try {
+                if (connection.isConnected) try {
                     val raw = connection.sendCommand("ATRV")
                     val r = ObdCommand.BatteryVoltage.parse(raw)
                     if (r is ParseResult.Success) r.numericValue?.let { if (it < lowestCrankingVoltage) lowestCrankingVoltage = it }
@@ -234,6 +234,7 @@ class VehicleViewModel : ViewModel() {
     }
 
     private suspend fun readBatteryVoltage() {
+        if (!connection.isConnected) return // soket yokken bos komut gonderme
         try {
             val raw = connection.sendCommand("ATRV")
             val r = ObdCommand.BatteryVoltage.parse(raw)
