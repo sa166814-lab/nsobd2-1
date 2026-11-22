@@ -55,6 +55,13 @@ class DriveLogger(private val connection: Elm327Connection) {
 
     var gpsTotalKm: Double = 0.0
 
+    // OBD BAGLANTI DURUMU — null = veri geliyor; dolu = ekranda gosterilecek uyari
+    private val _obdStatus = MutableStateFlow<String?>(null)
+    val obdStatus = _obdStatus.asStateFlow()
+    var obdDropCount: Int = 0; private set
+    var obdLostSec: Long = 0L; private set
+    var reconnectOk: Int = 0; private set
+
     // ---- TEŞHİS ----
     private var diagIlkRpm = ""; private var diagIlkBozukRpm = ""; private var diagIlkBozukZaman = 0L
     private var diagSonIyiZaman = 0L; private var diagIyiSatir = 0; private var diagAgBasta = ""; private var diagAgBozuk = ""
@@ -84,20 +91,46 @@ class DriveLogger(private val connection: Elm327Connection) {
         gpsTotalKm = 0.0; logIsLpg = isLpg
         startTimeMs = System.currentTimeMillis(); _isLogging.value = true
         diagIlkRpm = ""; diagIlkBozukRpm = ""; diagIlkBozukZaman = 0L; diagSonIyiZaman = 0L; diagIyiSatir = 0
+        _obdStatus.value = null; obdDropCount = 0; obdLostSec = 0L; reconnectOk = 0
         connection.resetDiag(); diagAgBasta = connection.agDurumu(); diagAgBozuk = ""
 
         loggingJob = scope.launch(Dispatchers.IO) {
             var lastSampleMs = System.currentTimeMillis()
             var lastSpeedKmh = 0.0
 
-            while (isActive && connection.isConnected) {
+            var emptyStreak = 0
+            var lostSinceMs = 0L
+
+            // Eskiden "while (connection.isConnected)" idi: ELM/WiFi kopunca bayrak true kaldigi icin
+            // kayit bos satirlarla dakikalarca devam ediyordu. Artik kopmayi algilayip yeniden baglaniyor.
+            while (isActive) {
                 val tick = System.currentTimeMillis()
+
+                if (!connection.isConnected || emptyStreak >= 2) {
+                    if (lostSinceMs == 0L) {
+                        lostSinceMs = tick; obdDropCount++
+                        if (diagAgBozuk.isEmpty()) diagAgBozuk = connection.agDurumu()
+                    }
+                    _obdStatus.value = "⚠️ OBD veri gelmiyor — yeniden bağlanılıyor..."
+                    val ok = try { connection.reconnect() } catch (_: Exception) { false }
+                    if (!ok) {
+                        _obdStatus.value = "🔴 OBD bağlantısı yok — tekrar denenecek (GPS kaydı sürüyor)"
+                        delay(3000); continue
+                    }
+                    reconnectOk++; emptyStreak = 0
+                    _obdStatus.value = "🟢 OBD yeniden bağlandı"
+                }
+
                 val data = HashMap<String, String>()
                 val parsed = HashMap<String, ParseResult>()
+                var bosUstUste = 0
 
                 for (cmd in commands) {
                     if (!isActive) break
+                    // Soket olduyse ya da 3 komut ust uste cevapsizsa turu kes (eskiden 11x3 sn = 33 sn takiliyordu)
+                    if (!connection.isConnected || bosUstUste >= 3) break
                     val raw = connection.sendCommand(cmd.pid)
+                    if (raw.isEmpty()) bosUstUste++ else bosUstUste = 0
                     val r = cmd.parse(raw)
                     if (cmd.pid == "010C") {
                         val rr = raw.ifEmpty { "(bos)" }.replace(";", ",").take(60)
@@ -126,6 +159,21 @@ class DriveLogger(private val connection: Elm327Connection) {
                 parsed["0107"]?.let { live["LTFT"] = it }
                 parsed["0114"]?.let { live["O2"] = it }
                 _liveData.value = live
+
+                // HİÇBİR PID cevap vermediyse: boş satır YAZMA, kopma say
+                if (parsed.values.none { it is ParseResult.Success }) {
+                    emptyStreak++
+                    delay((intervalMs - (System.currentTimeMillis() - tick)).coerceAtLeast(0L))
+                    continue
+                }
+                emptyStreak = 0
+                if (lostSinceMs > 0L) {
+                    obdLostSec += (tick - lostSinceMs) / 1000
+                    lostSinceMs = 0L
+                    _obdStatus.value = null
+                    // Kopma suresini km/yakit hesabina katma (sicrama olmasin)
+                    lastSampleMs = tick; lastSpeedKmh = 0.0
+                }
 
                 val entry = DriveLogEntry(
                     tick, data["010C"].orEmpty(), data["010D"].orEmpty(), data["0105"].orEmpty(),
@@ -179,7 +227,9 @@ class DriveLogger(private val connection: Elm327Connection) {
         }
     }
 
-    fun stopLogging() { _isLogging.value = false; loggingJob?.cancel(); loggingJob = null }
+    fun stopLogging() {
+        _isLogging.value = false; loggingJob?.cancel(); loggingJob = null; _obdStatus.value = null
+    }
 
     fun applyFuelConsumptionToTank(ctx: Context) {
         if (_totalLiters.value > 0.01) FuelTankStore.consume(ctx, _totalLiters.value)
@@ -237,19 +287,22 @@ class DriveLogger(private val connection: Elm327Connection) {
         try {
             file.bufferedWriter(Charsets.UTF_8).use { w ->
                 w.write("\uFEFF")
-                w.write("Zaman;RPM;Hiz;Su;Yuk;MAP;IAT;TPS;Avans;STFT;LTFT;Lambda\n")
+                w.write("Zaman;RPM;Hiz;Su;Yuk;MAP;IAT;TPS;Avans;STFT;LTFT;O2_V\n")
                 for (e in _entries) w.write("${sdfT.format(Date(e.timestamp))};${e.rpm};${e.speed};${e.coolant};${e.engineLoad};${e.map};${e.iat};${e.tps};${e.timingAdvance};${e.stft};${e.ltft};${e.lambda}\n")
                 w.write("\n=== OZET ===\n")
                 w.write("Kayit;${s.totalEntries}\nSure;${s.durationSec}sn\n")
                 w.write("OBD km;${"%.2f".format(Locale.US, s.totalKm)}\nGPS km;${"%.2f".format(Locale.US, s.totalKmGps)}\n")
                 w.write("Yakit L;${"%.2f".format(Locale.US, s.totalLiters)}\nL/100km;${"%.1f".format(Locale.US, s.avgLper100)}\n")
                 w.write("Maliyet;${"%.2f".format(Locale.US, s.cost)} TL\nMax BG;${"%.1f".format(Locale.US, s.maxHorsepower)}\n")
-                w.write("Max RPM;${s.maxRpm}\nMax Hiz;${s.maxSpeed}\nMax Hararet;${s.maxCoolant}\nEko;${s.ecoScore}/100\n")
+                w.write("Max RPM;${s.maxRpm}\nMax Hiz;${s.maxSpeed}\nMax Hararet;${s.maxCoolant}\nEko;${if (diagIyiSatir >= 3) "${s.ecoScore}/100" else "- (yeterli veri yok)"}\n")
                 w.write("Yakit Tipi;${if (logIsLpg) "LPG" else "Benzin"}\n")
                 // ---- TEŞHİS (sorun olursa bu satırları gönder) ----
                 val hm = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
                 w.write("\n=== TESHIS ===\n")
                 w.write("RPM dolu satir;$diagIyiSatir / ${_entries.size}\n")
+                w.write("OBD kopma sayisi;$obdDropCount\n")
+                w.write("Yeniden baglanma (basarili);$reconnectOk\n")
+                w.write("Verisiz sure;${obdLostSec}sn\n")
                 w.write("Ilk RPM cevabi;$diagIlkRpm\n")
                 w.write("Son saglam RPM;${if (diagSonIyiZaman > 0) hm.format(Date(diagSonIyiZaman)) else "hic"}\n")
                 w.write("Ilk bozuk RPM;${if (diagIlkBozukZaman > 0) hm.format(Date(diagIlkBozukZaman)) + " -> " + diagIlkBozukRpm else "yok"}\n")

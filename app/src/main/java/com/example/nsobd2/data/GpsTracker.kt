@@ -40,8 +40,10 @@ class GpsTracker(private val context: Context) {
 
             lastLocation?.let { prev ->
                 val deltaMeters = prev.distanceTo(loc)
-                // Sadece anlamlı hareket (>2m, hızlı sıçrama değil) say
-                if (deltaMeters in 2f..200f) {
+                // Sadece anlamlı hareket say: duran araçta GPS sapması km biriktirmesin
+                val iyiKonum = !loc.hasAccuracy() || loc.accuracy <= 25f
+                val hareketli = !loc.hasSpeed() || loc.speed >= 1.0f   // ~3.6 km/s üstü
+                if (deltaMeters in 2f..200f && iyiKonum && hareketli) {
                     _totalKmGps.value = _totalKmGps.value + (deltaMeters / 1000.0)
                 }
             }

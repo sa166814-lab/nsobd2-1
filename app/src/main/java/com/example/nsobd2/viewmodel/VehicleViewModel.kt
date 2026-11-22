@@ -139,6 +139,13 @@ class VehicleViewModel : ViewModel() {
     // DONMA DÜZELTME: Logger açıkken de polling devam eder ama LOGGER KENDİSİ veriyi üretir
     // Logger liveData'yı _uiState'e yazar
     init {
+        // Kayit sirasinda OBD koparsa durum yazisinda goster
+        viewModelScope.launch {
+            driveLogger.obdStatus.collect { st ->
+                if (st != null) _connectionStatus.value = st
+                else if (driveLogger.isLogging.value && connection.isConnected) _connectionStatus.value = "Bağlı — kayıt sürüyor"
+            }
+        }
         viewModelScope.launch {
             driveLogger.liveData.collect { data ->
                 if (driveLogger.isLogging.value && data.isNotEmpty()) {
@@ -158,7 +165,8 @@ class VehicleViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             var loopCounter = 0
             val dataCache = mutableMapOf<String, ParseResult>()
-            while (isActive && connection.isConnected) {
+            // Kayit sirasinda logger kopup yeniden baglanirken bayrak kisa sure false olur; polling olmesin
+            while (isActive && (connection.isConnected || driveLogger.isLogging.value)) {
                 try {
                     // Logger çalışıyorsa polling DUR — logger zaten veriyi üretiyor ve _uiState'e yazıyor
                     if (driveLogger.isLogging.value) { delay(500); continue }

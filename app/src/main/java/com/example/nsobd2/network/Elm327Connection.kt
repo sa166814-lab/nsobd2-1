@@ -55,10 +55,13 @@ class Elm327Connection {
     private var inStream: InputStream? = null
     private var outStream: OutputStream? = null
     private val cmdMutex = Mutex()
+    private var lastIp: String = "192.168.0.10"
+    private var lastPort: Int = 35000
 
     suspend fun connect(ip: String = "192.168.0.10", port: Int = 35000, updateStatus: suspend (String) -> Unit): String {
         return withContext(Dispatchers.IO) {
             try {
+                lastIp = ip; lastPort = port
                 try { socket?.close() } catch (_: Exception) {}
                 socket = null; inStream = null; outStream = null; isConnected = false
 
@@ -150,7 +153,7 @@ class Elm327Connection {
                     while (true) {
                         if (System.currentTimeMillis() - startTime > timeoutMs) break
                         val bytesRead = inStream?.read(buffer) ?: break
-                        if (bytesRead < 0) { eofCount++; break }
+                        if (bytesRead < 0) { eofCount++; lastError = "EOF (ELM soketi kapatti)"; baglantiDustu(); break }
                         val chunk = String(buffer, 0, bytesRead)
                         response.append(chunk)
                         if (chunk.contains(">")) break
@@ -158,8 +161,21 @@ class Elm327Connection {
                 } catch (_: SocketTimeoutException) {}
                 response.toString().replace(">", "").replace("SEARCHING...", "").replace("\r", "").replace("\n", "").trim()
                     .also { lastRaw = it }
-            } catch (e: Exception) { errorCount++; lastError = "${e.javaClass.simpleName}: ${e.message}"; "" }
+            } catch (e: Exception) { errorCount++; lastError = "${e.javaClass.simpleName}: ${e.message}"; baglantiDustu(); "" }
         }
+    }
+
+    /** Soket artik olu: bayragi indir ve kapat ki ust katman bos cevapla devam etmesin. */
+    private fun baglantiDustu() {
+        isConnected = false
+        try { socket?.close() } catch (_: Exception) {}
+        socket = null; inStream = null; outStream = null
+    }
+
+    /** Son kullanilan IP/port ile bastan baglanir (ATZ + protokol init). Surus kaydi kopunca kullanilir. */
+    suspend fun reconnect(): Boolean {
+        connect(lastIp, lastPort) { }
+        return isConnected
     }
 
     suspend fun disconnect() {
