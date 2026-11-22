@@ -41,6 +41,15 @@ class Elm327Connection {
         } catch (e: Exception) { "?" }
     }
 
+    private fun varsayilanWifi(): Boolean {
+        val ctx = ElmCtx.app ?: return true
+        return try {
+            val cm = ctx.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            cm.getNetworkCapabilities(cm.activeNetwork)
+                ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ?: true
+        } catch (_: Exception) { true }
+    }
+
     private fun wifiAgi(): android.net.Network? {
         val ctx = ElmCtx.app ?: return null
         return try {
@@ -70,16 +79,25 @@ class Elm327Connection {
                 while (!connected && attempts < 3) {
                     try {
                         socket = Socket()
-                        // ELM WiFi'sinde internet yok; Android trafiği mobil veriye kaydırabiliyor. Soketi WiFi'ye bağla.
-                        wifiAgi()?.let { net -> try { net.bindSocket(socket) } catch (_: Exception) {} }
+                        // NOT: Soketi bindSocket ile WiFi Network'une baglamak, Android internetsiz WiFi'yi
+                        // ~30 sn sonra yeniden degerlendirince soketi oldurtuyordu ("Software caused connection abort").
+                        // Saglam surumdeki gibi baglamadan aciliyor; sadece varsayilan ag WiFi DEGILSE baglaniyor.
+                        if (!varsayilanWifi()) {
+                            wifiAgi()?.let { net -> try { net.bindSocket(socket) } catch (_: Exception) {} }
+                        }
                         socket?.tcpNoDelay = true
                         socket?.keepAlive = true
                         socket?.receiveBufferSize = 8192
                         socket?.connect(InetSocketAddress(ip, port), 5000)
                         socket?.soTimeout = 5000
                         connected = true
-                    } catch (e: java.net.NoRouteToHostException) {
+                    } catch (e: Exception) {
+                        // Eskiden sadece NoRouteToHost tekrar deneniyordu; kopma sonrasi ELM eski oturumu
+                        // birakana kadar baska hatalar da gelebiliyor.
                         attempts++
+                        lastError = "Baglanti: ${e.javaClass.simpleName}: ${e.message}"
+                        try { socket?.close() } catch (_: Exception) {}
+                        socket = null
                         updateStatus("Ağ Bekleniyor... ($attempts/3)")
                         delay(1500)
                         if (attempts >= 3) throw e
@@ -174,6 +192,8 @@ class Elm327Connection {
 
     /** Son kullanilan IP/port ile bastan baglanir (ATZ + protokol init). Surus kaydi kopunca kullanilir. */
     suspend fun reconnect(): Boolean {
+        baglantiDustu()
+        delay(1500) // ELM'in eski TCP oturumunu birakmasi icin kisa bekleme
         connect(lastIp, lastPort) { }
         return isConnected
     }
